@@ -1,39 +1,47 @@
 version: '3'
 
+vars:
+  REQUIRED_CODE_COVERAGE: '100'
+
 tasks:
   default:
-    desc: Run the test suite
+    desc: CI pipeline
     cmds:
-      - task: test
+      - task: ci
 
   fmt:
-    desc: Format Go source files
+    desc: gofumpt (rewrites source)
     cmds:
-      - gofmt -w *.go
+      - gofumpt -l -w .
 
   test:
-    desc: Run package tests
+    desc: go test (race + coverage)
     cmds:
-      - go test ./...
+      - CGO_ENABLED=1 go test -race -count=1 -coverprofile=bin/coverage.out -covermode=atomic .
 
-  vet:
-    desc: Run go vet
+  covercheck:
+    desc: coverage >= REQUIRED_CODE_COVERAGE
+    vars:
+      COV:
+        sh: go tool cover -func=bin/coverage.out
     cmds:
-      - go vet ./...
+      - cmd: |
+          {{- $pctStr := last (regexFindAll "[0-9]+\\.?[0-9]*%" .COV -1) | trimSuffix "%" -}}
+          {{- $req := .REQUIRED_CODE_COVERAGE | float64 -}}
+          {{- $pct := $pctStr | float64 -}}
+          echo "coverage: {{printf "%.1f" $pct}}%"
+          {{- if lt $pct $req }}
+          echo "FAIL: coverage {{printf "%.1f" $pct}}% < {{.REQUIRED_CODE_COVERAGE}}%"
+          exit 1
+          {{- end }}
+        ignore_error: false
+    internal: true
 
-  lint:
-    desc: Run the configured linter
+  ci:
+    desc: format, tidy, lint, test, coverage
     cmds:
+      - gofumpt -d .
+      - go mod tidy -diff
       - golangci-lint run ./...
-
-  tidy:
-    desc: Tidy module dependencies
-    cmds:
-      - go mod tidy
-
-  check:
-    desc: Run formatting, tests, and static checks
-    cmds:
-      - task: fmt
       - task: test
-      - task: vet
+      - task: covercheck

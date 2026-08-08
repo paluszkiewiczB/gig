@@ -63,6 +63,7 @@ func ExampleWithEnvLookup() {
 	env := map[string]string{"SERVICE_NAME": "demo"}
 	lookup := func(name string) (string, bool) {
 		v, ok := env[name]
+
 		return v, ok
 	}
 
@@ -85,6 +86,7 @@ func Example_expressions() {
 	env := map[string]string{"USER": "alice", "MODE": "production"}
 	lookup := func(name string) (string, bool) {
 		v, ok := env[name]
+
 		return v, ok
 	}
 
@@ -141,6 +143,7 @@ func Example_expressions_escape() {
 	env := map[string]string{"OTHER": "value"}
 	lookup := func(name string) (string, bool) {
 		v, ok := env[name]
+
 		return v, ok
 	}
 
@@ -178,6 +181,7 @@ func ExampleWithResolver() {
 		gig.WithResolver("!upper", func(_ context.Context, node *yaml.Node) error {
 			node.Tag = ""
 			node.Value = strings.ToUpper(node.Value)
+
 			return nil
 		}),
 	)

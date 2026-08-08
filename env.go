@@ -9,7 +9,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var errOptionalUnset = errors.New("optional value is unset")
+var (
+	errOptionalUnset         = errors.New("optional value is unset")
+	errUnterminatedExpansion = errors.New("unterminated environment expansion")
+	errNotSet                = errors.New("environment variable is not set")
+)
 
 func envTagResolver(expander EnvExpander) Resolver {
 	return func(_ context.Context, node *yaml.Node) error {
@@ -21,10 +25,12 @@ func envTagResolver(expander EnvExpander) Resolver {
 			if node.Tag == "!env?" {
 				return errOptionalUnset
 			}
-			return fmt.Errorf("environment expression %q produced no value", node.Value)
+
+			return fmt.Errorf("%q: environment expression produced no value", node.Value)
 		}
 		node.Tag = ""
 		node.Value = value
+
 		return nil
 	}
 }
@@ -36,25 +42,29 @@ func expandEnv(value string, optional bool, lookup EnvLookup) (string, bool, err
 			if optional {
 				return "", false, nil
 			}
-			return "", false, fmt.Errorf("environment variable %s is not set", value)
+
+			return "", false, fmt.Errorf("%s: %w", value, errNotSet)
 		}
+
 		return resolved, true, nil
 	}
 
 	parser := envParser{
 		input:  value,
 		lookup: lookup,
+		pos:    0,
 	}
 	result, err := parser.parseExpression()
 	if err != nil {
 		return "", false, err
 	}
 	if parser.pos != len(parser.input) {
-		return "", false, fmt.Errorf("unexpected text after environment expansion")
+		return "", false, errors.New("unexpected text after environment expansion")
 	}
 	if !result.present && optional {
 		return "", false, nil
 	}
+
 	return result.value, true, nil
 }
 
@@ -62,11 +72,13 @@ func expandEnvWord(value string, lookup EnvLookup) (string, error) {
 	parser := envParser{
 		input:  value,
 		lookup: lookup,
+		pos:    0,
 	}
 	result, err := parser.evaluateWord(value)
 	if err != nil {
 		return "", err
 	}
+
 	return result.value, nil
 }
 
@@ -83,6 +95,7 @@ type envParser struct {
 
 func (p *envParser) parseExpression() (envResult, error) {
 	p.consume("${")
+
 	return p.parseExpansionBody()
 }
 
@@ -94,6 +107,7 @@ func (p *envParser) parseExpansionBody() (envResult, error) {
 
 	if p.consume("}") {
 		value, present := p.lookup(name)
+
 		return envResult{value: value, present: present}, nil
 	}
 
@@ -102,7 +116,7 @@ func (p *envParser) parseExpansionBody() (envResult, error) {
 		return envResult{}, err
 	}
 	if operator == "=" || operator == ":=" {
-		return envResult{}, fmt.Errorf("environment assignment operator %s is unsupported", operator)
+		return envResult{}, fmt.Errorf("%s: environment assignment operator is unsupported", operator)
 	}
 
 	word, err := p.readWord()
@@ -110,46 +124,75 @@ func (p *envParser) parseExpansionBody() (envResult, error) {
 		return envResult{}, err
 	}
 
+	return p.resolveOperator(name, operator, word)
+}
+
+func (p *envParser) resolveOperator(name, operator, word string) (envResult, error) {
 	value, present := p.lookup(name)
 	switch operator {
 	case "-":
-		if present {
-			return envResult{value: value, present: true}, nil
-		}
-		return p.evaluateWord(word)
+		return p.opDefault(value, present, word)
 	case ":-":
-		if present && value != "" {
-			return envResult{value: value, present: true}, nil
-		}
-		return p.evaluateWord(word)
+		return p.opDefaultOrEmpty(value, present, word)
 	case "+":
-		if !present {
-			return envResult{present: true}, nil
-		}
-		return p.evaluateWord(word)
+		return p.opAlternate(value, present, word)
 	case ":+":
-		if !present || value == "" {
-			return envResult{present: true}, nil
-		}
-		return p.evaluateWord(word)
+		return p.opAlternateOrEmpty(value, present, word)
 	case "?":
-		if present {
-			return envResult{value: value, present: true}, nil
-		}
-		return p.requiredError(name, word, false)
+		return p.opRequired(name, value, present, word, false)
 	case ":?":
-		if present && value != "" {
-			return envResult{value: value, present: true}, nil
-		}
-		return p.requiredError(name, word, true)
+		return p.opRequired(name, value, present, word, true)
 	default:
-		return envResult{}, fmt.Errorf("unsupported environment operator %s", operator)
+		return envResult{}, fmt.Errorf("%s: unsupported environment operator", operator)
 	}
+}
+
+func (p *envParser) opDefault(value string, present bool, word string) (envResult, error) {
+	if present {
+		return envResult{value: value, present: true}, nil
+	}
+
+	return p.evaluateWord(word)
+}
+
+func (p *envParser) opDefaultOrEmpty(value string, present bool, word string) (envResult, error) {
+	if present && value != "" {
+		return envResult{value: value, present: true}, nil
+	}
+
+	return p.evaluateWord(word)
+}
+
+func (p *envParser) opAlternate(_ string, present bool, word string) (envResult, error) {
+	if !present {
+		return envResult{value: "", present: true}, nil
+	}
+
+	return p.evaluateWord(word)
+}
+
+func (p *envParser) opAlternateOrEmpty(value string, present bool, word string) (envResult, error) {
+	if !present || value == "" {
+		return envResult{value: "", present: true}, nil
+	}
+
+	return p.evaluateWord(word)
+}
+
+func (p *envParser) opRequired(name, value string, present bool, word string, empty bool) (envResult, error) {
+	if empty && (!present || value == "") {
+		return p.requiredError(name, word, true)
+	}
+	if !empty && !present {
+		return p.requiredError(name, word, false)
+	}
+
+	return envResult{value: value, present: true}, nil
 }
 
 func (p *envParser) parseName() (string, error) {
 	if p.pos >= len(p.input) || !isEnvNameStart(p.input[p.pos]) {
-		return "", fmt.Errorf("invalid environment variable name at position %d", p.pos)
+		return "", fmt.Errorf("%d: invalid environment variable name", p.pos)
 	}
 
 	start := p.pos
@@ -157,24 +200,27 @@ func (p *envParser) parseName() (string, error) {
 	for p.pos < len(p.input) && isEnvNameChar(p.input[p.pos]) {
 		p.pos++
 	}
+
 	return p.input[start:p.pos], nil
 }
 
 func (p *envParser) parseOperator() (string, error) {
 	if p.pos >= len(p.input) {
-		return "", fmt.Errorf("unterminated environment expansion")
+		return "", errUnterminatedExpansion
 	}
 	if p.input[p.pos] == ':' {
 		if p.pos+1 >= len(p.input) {
-			return "", fmt.Errorf("environment operator is incomplete")
+			return "", errors.New("environment operator is incomplete")
 		}
 		operator := p.input[p.pos : p.pos+2]
 		p.pos += 2
+
 		return operator, nil
 	}
 
 	operator := p.input[p.pos : p.pos+1]
 	p.pos++
+
 	return operator, nil
 }
 
@@ -185,24 +231,22 @@ func (p *envParser) readWord() (string, error) {
 	for p.pos < len(p.input) {
 		if p.input[p.pos] == '}' && nested == 0 {
 			p.pos++
+
 			return word.String(), nil
 		}
 		if p.input[p.pos] == '\\' {
-			if p.pos+1 >= len(p.input) {
-				return "", fmt.Errorf("trailing escape in environment expansion")
+			text, err := p.readWordEscape(&nested)
+			if err != nil {
+				return "", err
 			}
-			if p.pos+2 < len(p.input) && p.input[p.pos:p.pos+3] == "\\${" {
-				nested++
-			} else if nested > 0 && p.input[p.pos+1] == '}' {
-				nested--
-			}
-			word.WriteString(p.input[p.pos : p.pos+2])
-			p.pos += 2
+			word.WriteString(text)
+
 			continue
 		}
 		if p.consume("${") {
 			nested++
 			word.WriteString("${")
+
 			continue
 		}
 		if p.input[p.pos] == '}' && nested > 0 {
@@ -212,20 +256,36 @@ func (p *envParser) readWord() (string, error) {
 		p.pos++
 	}
 
-	return "", fmt.Errorf("unterminated environment expansion")
+	return "", errUnterminatedExpansion
+}
+
+func (p *envParser) readWordEscape(nested *int) (string, error) {
+	if p.pos+1 >= len(p.input) {
+		return "", errors.New("trailing escape in environment expansion")
+	}
+	if p.pos+2 < len(p.input) && p.input[p.pos:p.pos+3] == "\\${" {
+		*nested++
+	} else if *nested > 0 && p.input[p.pos+1] == '}' {
+		*nested--
+	}
+	seq := p.input[p.pos : p.pos+2]
+	p.pos += 2
+
+	return seq, nil
 }
 
 func (p *envParser) evaluateWord(word string) (envResult, error) {
-	parser := envParser{input: word, lookup: p.lookup}
+	parser := envParser{input: word, lookup: p.lookup, pos: 0}
 	var value strings.Builder
 
 	for parser.pos < len(parser.input) {
 		if parser.input[parser.pos] == '\\' {
 			if parser.pos+1 >= len(parser.input) {
-				return envResult{}, fmt.Errorf("trailing escape in environment word")
+				return envResult{}, errors.New("trailing escape in environment word")
 			}
 			value.WriteByte(parser.input[parser.pos+1])
 			parser.pos += 2
+
 			continue
 		}
 		if parser.consume("${") {
@@ -234,6 +294,7 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 				return envResult{}, err
 			}
 			value.WriteString(result.value)
+
 			continue
 		}
 		if parser.input[parser.pos] == '$' && parser.pos+1 < len(parser.input) && isEnvNameStart(parser.input[parser.pos+1]) {
@@ -241,6 +302,7 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 			name, _ := parser.parseName()
 			resolved, _ := parser.lookup(name)
 			value.WriteString(resolved)
+
 			continue
 		}
 		value.WriteByte(parser.input[parser.pos])
@@ -257,11 +319,13 @@ func (p *envParser) requiredError(name, word string, empty bool) (envResult, err
 	}
 	if message.value == "" {
 		if empty {
-			return envResult{}, fmt.Errorf("environment variable %s is empty", name)
+			return envResult{}, fmt.Errorf("%s: environment variable is empty", name)
 		}
-		return envResult{}, fmt.Errorf("environment variable %s is not set", name)
+
+		return envResult{}, fmt.Errorf("%s: %w", name, errNotSet)
 	}
-	return envResult{}, errors.New(message.value)
+
+	return envResult{}, fmt.Errorf("%s", message.value)
 }
 
 func (p *envParser) consume(prefix string) bool {
@@ -269,6 +333,7 @@ func (p *envParser) consume(prefix string) bool {
 		return false
 	}
 	p.pos += len(prefix)
+
 	return true
 }
 
