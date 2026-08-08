@@ -1,0 +1,39 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Run the test suite
+    cmds:
+      - task: test
+
+  fmt:
+    desc: Format Go source files
+    cmds:
+      - gofmt -w *.go
+
+  test:
+    desc: Run package tests
+    cmds:
+      - go test ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run the configured linter
+    cmds:
+      - golangci-lint run ./...
+
+  tidy:
+    desc: Tidy module dependencies
+    cmds:
+      - go mod tidy
+
+  check:
+    desc: Run formatting, tests, and static checks
+    cmds:
+      - task: fmt
+      - task: test
+      - task: vet
