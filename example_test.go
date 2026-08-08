@@ -133,6 +133,41 @@ func Example_expressions() {
 	// nested: production
 }
 
+func Example_expressions_escape() {
+	type Config struct {
+		Msg string `yaml:"msg"`
+	}
+
+	env := map[string]string{"OTHER": "value"}
+	lookup := func(name string) (string, bool) {
+		v, ok := env[name]
+		return v, ok
+	}
+
+	cfg, err := gig.Load[Config](
+		strings.NewReader(`msg: !env '${GREETING:-hello \$there}'`),
+		gig.WithEnvLookup(lookup),
+	)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(cfg.Msg)
+
+	env["GREETING"] = "hi"
+	cfg, err = gig.Load[Config](
+		strings.NewReader(`msg: !env '${GREETING:-hello \$there}'`),
+		gig.WithEnvLookup(lookup),
+	)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(cfg.Msg)
+
+	// Output:
+	// hello $there
+	// hi
+}
+
 func ExampleWithResolver() {
 	type Config struct {
 		Name string `yaml:"name"`

@@ -33,8 +33,10 @@ type Resolver func(ctx context.Context, node *yaml.Node) error
 type EnvLookup func(name string) (value string, set bool)
 
 // EnvExpander resolves an environment expression. The optional argument is
-// true for !env? and false for !env.
-type EnvExpander func(expression string, optional bool) (string, error)
+// true for !env? and false for !env. When the expression is unset and
+// optional is true, return ("", false, nil) to signal an absent value
+// without producing an error.
+type EnvExpander func(expression string, optional bool) (value string, present bool, err error)
 
 // Option configures a call to Load.
 type Option func(*loader) error
@@ -213,7 +215,7 @@ func Load[T any](src io.Reader, opts ...Option) (T, error) {
 	}
 
 	if ld.envExpand == nil {
-		ld.envExpand = func(expression string, optional bool) (string, error) {
+		ld.envExpand = func(expression string, optional bool) (string, bool, error) {
 			return expandEnv(expression, optional, ld.envLookup)
 		}
 	}
@@ -233,17 +235,12 @@ func Load[T any](src io.Reader, opts ...Option) (T, error) {
 	readers := []io.Reader{src}
 	readers = append(readers, ld.overrides...)
 
-	docs := make([][]byte, 0, len(readers))
+	var merged *yaml.Node
 	for _, r := range readers {
 		data, err := io.ReadAll(r)
 		if err != nil {
 			return zero, fmt.Errorf("read: %w", err)
 		}
-		docs = append(docs, data)
-	}
-
-	var merged *yaml.Node
-	for _, data := range docs {
 		var doc yaml.Node
 		if err := yaml.Unmarshal(data, &doc); err != nil {
 			return zero, fmt.Errorf("yaml: %w", err)
@@ -302,7 +299,8 @@ func currentDirectory() string {
 
 func fileResolver(ld loader, optional bool) Resolver {
 	return func(_ context.Context, node *yaml.Node) error {
-		fileName := node.Value
+		expression := node.Value
+		fileName := expression
 		var err error
 		if strings.Contains(fileName, "$") {
 			fileName, err = expandEnvWord(fileName, ld.envLookup)
@@ -312,14 +310,14 @@ func fileResolver(ld loader, optional bool) Resolver {
 		}
 		name, err := ld.filePath(fileName)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot read %q (from %q): %w", name, expression, err)
 		}
 		data, err := fs.ReadFile(ld.fileSystem, name)
 		if err != nil {
 			if optional && errors.Is(err, fs.ErrNotExist) {
 				return errOptionalUnset
 			}
-			return fmt.Errorf("cannot read file %s: %w", node.Value, err)
+			return fmt.Errorf("cannot read %q (from %q): %w", name, expression, err)
 		}
 		node.Tag = ""
 		node.Value = strings.TrimSpace(string(data))

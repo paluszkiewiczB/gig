@@ -416,7 +416,7 @@ func TestLoadEnv(t *testing.T) {
 func TestLoadFile(t *testing.T) {
 	t.Run("required missing reports error", func(t *testing.T) {
 		_, err := gig.Load[cfg](strings.NewReader("name: !file missing-secret\n"))
-		if err == nil || !strings.Contains(err.Error(), "cannot read file missing-secret") {
+		if err == nil || !strings.Contains(err.Error(), `cannot read "`) || !strings.Contains(err.Error(), `from "missing-secret"`) {
 			t.Fatalf("Load() error = %v, want file read error", err)
 		}
 	})
@@ -891,12 +891,12 @@ func TestLoadEnvLookup(t *testing.T) {
 		var gotOptional bool
 		got, err := gig.Load[cfg](
 			strings.NewReader("name: !env? CUSTOM_EXPRESSION\n"),
-			gig.WithEnvExpander(func(expression string, optional bool) (string, error) {
+			gig.WithEnvExpander(func(expression string, optional bool) (string, bool, error) {
 				gotOptional = optional
 				if expression != "CUSTOM_EXPRESSION" {
-					return "", fmt.Errorf("unexpected expression %q", expression)
+					return "", false, fmt.Errorf("unexpected expression %q", expression)
 				}
-				return "from-custom-expander", nil
+				return "from-custom-expander", true, nil
 			}),
 		)
 		if err != nil {

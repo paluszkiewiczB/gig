@@ -37,7 +37,11 @@
 //
 //	message: !env '${LOG_LEVEL:-${ENV:-info}}'
 //
-// A backslash escapes the next character in fallback words.
+// A backslash escapes the next character in fallback words, producing a
+// literal character.  When GREETING is unset, \$-there- resolves to $there:
+//
+//	msg: !env '${GREETING:-hello \$there}'   ->   "hello $there"
+//
 // Assignment operators (= and :=) are rejected.
 //
 // File tags use the unrestricted system filesystem (os.DirFS("/")) by default.
@@ -70,12 +74,14 @@
 //
 // # Processing Order
 //
-//  1. Read all sources.
-//  2. Resolve optional tags — unset values remove that field.
-//  3. Merge sources in order (maps combine, scalars replace).
-//  4. Resolve required tags (!env, !file, custom).
-//  5. Decode into T.
-//  6. Validate if implemented.
+//  1. For each source in order:
+//     - read the source
+//     - unmarshal YAML
+//     - resolve optional tags (unset values remove that field)
+//     - merge into the accumulator (maps combine, scalars and sequences replace)
+//  2. Resolve required tags (!env, !file, custom) on the merged tree.
+//  3. Decode into T.
+//  4. Validate if implemented.
 //
 // # Defaults
 //
@@ -88,7 +94,11 @@
 // # Errors
 //
 // Resolution failures return ResolveError with paths like $.login.
-// The underlying cause is available through errors.Is / errors.As.
+// Use errors.As to extract the path from a failed load:
+//
+//	if resolveErr, ok := errors.As[ResolveError](err); ok {
+//	    fmt.Println("path:", resolveErr.Path)
+//	}
 //
 // WithEnvLookup and WithEnvExpander replace the default environment lookup
 // and expression expander used by !env and !env?.

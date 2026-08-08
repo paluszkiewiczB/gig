@@ -36,12 +36,12 @@ if err != nil {
 |---|---|
 | `$VAR` | Short form, value of VAR, empty if unset |
 | `${VAR}` | Full form |
-| `${VAR:-default}` | VAR unset or empty → `default`, otherwise VAR |
-| `${VAR-default}` | VAR unset → `default`, otherwise VAR |
-| `${VAR:+alternate}` | VAR set and non-empty → `alternate`, otherwise `""` |
-| `${VAR+alternate}` | VAR set → `alternate`, otherwise `""` |
-| `${VAR:?message}` | VAR unset or empty → error with `message`, otherwise VAR |
-| `${VAR?message}` | VAR unset → error with `message`, otherwise VAR |
+| `${VAR:-default}` | VAR unset or empty  =  `default`, otherwise VAR |
+| `${VAR-default}` | VAR unset  =  `default`, otherwise VAR |
+| `${VAR:+alternate}` | VAR set and non-empty  =  `alternate`, otherwise `""` |
+| `${VAR+alternate}` | VAR set  =  `alternate`, otherwise `""` |
+| `${VAR:?message}` | VAR unset or empty  =  error with `message`, otherwise VAR |
+| `${VAR?message}` | VAR unset  =  error with `message`, otherwise VAR |
 
 Nested:
 
@@ -49,7 +49,13 @@ Nested:
 LOG_LEVEL: !env '${LOG_LEVEL:-${ENV:-info}}'
 ```
 
-A backslash escapes the next character in fallback words.
+A backslash escapes the next character in fallback words, producing a
+literal character. When `GREETING` is unset, `\$` resolves to a literal `$`:
+
+```yaml
+msg: !env '${GREETING:-hello \$there}'    = "hello $there"
+```
+
 Assignment operators (`=`, `:=`) are rejected.
 
 ## Custom Resolvers
@@ -84,11 +90,32 @@ source when the override doesn't provide them.
 - Loading context: `context.Background()` (override with `WithContext`)
 - Validation: enabled (disable with `WithValidation(false)`)
 
+## Errors
+
+Resolution failures return `ResolveError` with the configuration path
+(e.g., `$.database.host`). Extract it with `errors.As`:
+
+```go
+resolveErr, ok := errors.As[gig.ResolveError](err)
+```
+
 ## Options
 
-`WithBaseDir`, `WithContext`, `WithEnvExpander`, `WithEnvLookup`,
-`WithFS`, `WithResolver`, `WithRoot`, `WithSources`,
-`WithValidation`.
+- [`WithBaseDir`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithBaseDir)
+- [`WithContext`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithContext)
+- [`WithEnvExpander`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithEnvExpander)
+- [`WithEnvLookup`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithEnvLookup)
+- [`WithFS`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithFS)
+- [`WithResolver`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithResolver)
+- [`WithRoot`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithRoot)
+- [`WithSources`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithSources)
+- [`WithValidation`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#WithValidation)
+
+## Reference
+
+- [`ResolveError`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#ResolveError)
+- [`Validator`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#Validator)
+- [`ValidatorContext`](https://pkg.go.dev/github.com/paluszkiewiczB/gig#ValidatorContext)
 
 ## Install
 

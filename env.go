@@ -13,9 +13,15 @@ var errOptionalUnset = errors.New("optional value is unset")
 
 func envTagResolver(expander EnvExpander) Resolver {
 	return func(_ context.Context, node *yaml.Node) error {
-		value, err := expander(node.Value, node.Tag == "!env?")
+		value, present, err := expander(node.Value, node.Tag == "!env?")
 		if err != nil {
 			return err
+		}
+		if !present {
+			if node.Tag == "!env?" {
+				return errOptionalUnset
+			}
+			return fmt.Errorf("environment expression %q produced no value", node.Value)
 		}
 		node.Tag = ""
 		node.Value = value
@@ -23,16 +29,16 @@ func envTagResolver(expander EnvExpander) Resolver {
 	}
 }
 
-func expandEnv(value string, optional bool, lookup EnvLookup) (string, error) {
+func expandEnv(value string, optional bool, lookup EnvLookup) (string, bool, error) {
 	if !strings.HasPrefix(value, "${") {
 		resolved, ok := lookup(value)
 		if !ok {
 			if optional {
-				return "", errOptionalUnset
+				return "", false, nil
 			}
-			return "", fmt.Errorf("environment variable %s is not set", value)
+			return "", false, fmt.Errorf("environment variable %s is not set", value)
 		}
-		return resolved, nil
+		return resolved, true, nil
 	}
 
 	parser := envParser{
@@ -41,15 +47,15 @@ func expandEnv(value string, optional bool, lookup EnvLookup) (string, error) {
 	}
 	result, err := parser.parseExpression()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if parser.pos != len(parser.input) {
-		return "", fmt.Errorf("unexpected text after environment expansion")
+		return "", false, fmt.Errorf("unexpected text after environment expansion")
 	}
 	if !result.present && optional {
-		return "", errOptionalUnset
+		return "", false, nil
 	}
-	return result.value, nil
+	return result.value, true, nil
 }
 
 func expandEnvWord(value string, lookup EnvLookup) (string, error) {
