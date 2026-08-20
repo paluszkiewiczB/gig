@@ -4,6 +4,7 @@ linters:
   default: all
   enable:
     - gomodguard_v2
+    - errcheck
   disable:
     - gomodguard
     - containedctx
@@ -29,7 +30,11 @@ linters:
         linters:
           - cyclop
           - gocognit
-
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    
 formatters:
   enable:
     - gofumpt

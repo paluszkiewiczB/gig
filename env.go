@@ -297,12 +297,7 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 
 			continue
 		}
-		if parser.input[parser.pos] == '$' && parser.pos+1 < len(parser.input) && isEnvNameStart(parser.input[parser.pos+1]) {
-			parser.pos++
-			name, _ := parser.parseName()
-			resolved, _ := parser.lookup(name)
-			value.WriteString(resolved)
-
+		if parser.readSimpleName(&value) {
 			continue
 		}
 		value.WriteByte(parser.input[parser.pos])
@@ -310,6 +305,22 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 	}
 
 	return envResult{value: value.String(), present: true}, nil
+}
+
+func (p *envParser) readSimpleName(value *strings.Builder) bool {
+	if p.input[p.pos] == '$' && p.pos+1 < len(p.input) && isEnvNameStart(p.input[p.pos+1]) {
+		p.pos++
+		start := p.pos
+		for p.pos < len(p.input) && isEnvNameChar(p.input[p.pos]) {
+			p.pos++
+		}
+		resolved, _ := p.lookup(p.input[start:p.pos])
+		value.WriteString(resolved)
+
+		return true
+	}
+
+	return false
 }
 
 func (p *envParser) requiredError(name, word string, empty bool) (envResult, error) {

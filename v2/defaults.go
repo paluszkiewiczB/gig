@@ -2,24 +2,24 @@ package gig
 
 import "os"
 
-func buildDefaultMutators(fileOpts []FileOption, envOpts []EnvOption) []Mutator { //nolint:cyclop,unparam
+func buildDefaultMutators(fileOpts []FileOption, envOpts []EnvOption) ([]Mutator, error) {
 	envCfg := &envConfig{
 		lookup: osLookupEnv,
 	}
 	for _, opt := range envOpts {
-		opt(envCfg)
+		if err := opt(envCfg); err != nil {
+			return nil, err
+		}
 	}
 
 	fileCfg := &fileConfig{
 		envLookup: envCfg.lookup,
 	}
 	for _, opt := range fileOpts {
-		opt(fileCfg)
+		if err := opt(fileCfg); err != nil {
+			return nil, err
+		}
 	}
-	if fileCfg.envLookup == nil {
-		fileCfg.envLookup = envCfg.lookup
-	}
-
 	if fileCfg.fsys != nil && fileCfg.root != nil {
 		fileCfg.fsys = nil
 	}
@@ -27,34 +27,27 @@ func buildDefaultMutators(fileOpts []FileOption, envOpts []EnvOption) []Mutator 
 		fileCfg.fsys = fileCfg.root.FS()
 	}
 
-	if envCfg.hasLookup && envCfg.lookup == nil {
-		return []Mutator{errorMutator("env lookup must not be nil")}
-	}
-	if envCfg.hasExpander && envCfg.expander == nil {
-		return []Mutator{errorMutator("env expander must not be nil")}
-	}
-	if fileCfg.hasRoot && fileCfg.root == nil {
-		return []Mutator{errorMutator("root must not be nil")}
-	}
-	if fileCfg.hasFS && fileCfg.fsys == nil {
-		return []Mutator{errorMutator("filesystem must not be nil")}
-	}
-
-	envHandler := &envHandler{cfg: envCfg}
-	fileHandler := &fileHandler{cfg: fileCfg}
-
 	return []Mutator{
 		NewTagResolver(map[string]Mutator{
-			"!env":   envHandler,
-			"!env?":  envHandler,
-			"!file":  fileHandler,
-			"!file?": fileHandler,
+			"!env":   &envHandler{cfg: envCfg},
+			"!env?":  &envHandler{cfg: envCfg},
+			"!file":  &fileHandler{cfg: fileCfg},
+			"!file?": &fileHandler{cfg: fileCfg},
 		}),
-	}
+	}, nil
 }
 
 var osLookupEnv = os.LookupEnv
 
+// DefaultMutators returns the default mutator chain: a TagResolver handling
+// !env, !env?, !file, and !file?.
 func DefaultMutators() []Mutator {
-	return buildDefaultMutators(nil, nil)
+	return []Mutator{
+		NewTagResolver(map[string]Mutator{
+			"!env":   &envHandler{cfg: &envConfig{lookup: osLookupEnv}},
+			"!env?":  &envHandler{cfg: &envConfig{lookup: osLookupEnv}},
+			"!file":  &fileHandler{cfg: &fileConfig{envLookup: osLookupEnv}},
+			"!file?": &fileHandler{cfg: &fileConfig{envLookup: osLookupEnv}},
+		}),
+	}
 }

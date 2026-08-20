@@ -1,7 +1,7 @@
-version: '3'
+version: "3"
 
 vars:
-  REQUIRED_CODE_COVERAGE: '100'
+  REQUIRED_CODE_COVERAGE: "100"
 
 tasks:
   default:
@@ -12,7 +12,7 @@ tasks:
   fmt:
     desc: gofumpt (rewrites source)
     cmds:
-      - gofumpt -l -w .
+      - gofumpt -l -w ./...
 
   test:
     desc: go test (race + coverage)
@@ -40,7 +40,7 @@ tasks:
   ci:
     desc: format, tidy, lint, test, coverage
     cmds:
-      - gofumpt -d .
+      - gofumpt -d . > /dev/null || ( echo "Code is not gofumpted, run task fmt" && exit 1 )
       - go mod tidy -diff
       - golangci-lint run ./...
       - task: test

@@ -88,5 +88,9 @@
 // # Errors
 //
 // Resolution failures return ResolveError with paths like $.login.
-// Use errors.As to extract the path from a failed load.
+// Use errors.As to extract the path from a failed load:
+//
+//	if resolveErr, ok := errors.As[ResolveError](err); ok {
+//	    fmt.Println("path:", resolveErr.Path)
+//	}
 package gig

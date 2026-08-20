@@ -10,47 +10,67 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// EnvLookup looks up an environment variable. The boolean reports whether the
+// variable is set, allowing callers to distinguish unset from empty.
 type EnvLookup func(name string) (value string, set bool)
 
+// EnvExpander resolves an environment expression. The optional argument is
+// true for !env? and false for !env. When the expression is unset and
+// optional is true, return ("", false, nil) to signal an absent value
+// without producing an error.
 type EnvExpander func(expression string, optional bool) (value string, present bool, err error)
 
-type EnvOption func(*envConfig)
+// EnvOption configures a call to NewEnvHandler.
+type EnvOption func(*envConfig) error
 
 type envConfig struct {
-	lookup      EnvLookup
-	expander    EnvExpander
-	hasLookup   bool
-	hasExpander bool
+	lookup   EnvLookup
+	expander EnvExpander
 }
 
+// WithEnvLookup sets the lookup used by the default environment expander and
+// by environment expansions inside !file and !file?.
 func WithEnvLookup(lookup EnvLookup) EnvOption {
-	return func(cfg *envConfig) {
+	return func(cfg *envConfig) error {
+		if lookup == nil {
+			return errors.New("gig: env lookup must not be nil")
+		}
 		cfg.lookup = lookup
-		cfg.hasLookup = true
+		return nil
 	}
 }
 
+// WithEnvExpander replaces the default Bash-like environment expression
+// expander used by !env and !env?.
 func WithEnvExpander(expander EnvExpander) EnvOption {
-	return func(cfg *envConfig) {
+	return func(cfg *envConfig) error {
+		if expander == nil {
+			return errors.New("gig: env expander must not be nil")
+		}
 		cfg.expander = expander
-		cfg.hasExpander = true
+		return nil
 	}
 }
 
-func NewEnvHandler(opts ...EnvOption) Mutator {
+// NewEnvHandler creates a Mutator that resolves !env and !env? tags using the
+// given options. When called without options, it uses os.LookupEnv.
+func NewEnvHandler(opts ...EnvOption) (Mutator, error) {
 	cfg := &envConfig{
 		lookup: os.LookupEnv,
 	}
 	for _, opt := range opts {
-		opt(cfg)
+		if err := opt(cfg); err != nil {
+			return nil, err
+		}
 	}
-	if cfg.lookup == nil {
-		return errorMutator("env lookup must not be nil")
-	}
-	return &envHandler{cfg: cfg}
+	return &envHandler{cfg: cfg}, nil
 }
 
-func DefaultEnvHandler() Mutator { return NewEnvHandler() }
+// DefaultEnvHandler returns a Mutator that resolves !env and !env? using
+// os.LookupEnv without any custom configuration.
+func DefaultEnvHandler() Mutator {
+	return &envHandler{cfg: &envConfig{lookup: os.LookupEnv}}
+}
 
 type envHandler struct {
 	cfg *envConfig
@@ -309,11 +329,11 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 
 	for parser.pos < len(parser.input) {
 		if parser.input[parser.pos] == '\\' {
-			if parser.pos+1 >= len(parser.input) {
-				return envResult{}, errors.New("trailing escape in environment word")
+			b, err := parser.readEscape()
+			if err != nil {
+				return envResult{}, err
 			}
-			value.WriteByte(parser.input[parser.pos+1])
-			parser.pos += 2
+			value.WriteByte(b)
 			continue
 		}
 		if parser.consume("${") {
@@ -324,11 +344,7 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 			value.WriteString(result.value)
 			continue
 		}
-		if parser.input[parser.pos] == '$' && parser.pos+1 < len(parser.input) && isEnvNameStart(parser.input[parser.pos+1]) {
-			parser.pos++
-			name, _ := parser.parseName()
-			resolved, _ := parser.lookup(name)
-			value.WriteString(resolved)
+		if parser.handleSimpleName(&value) {
 			continue
 		}
 		value.WriteByte(parser.input[parser.pos])
@@ -336,6 +352,32 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 	}
 
 	return envResult{value: value.String(), present: true}, nil
+}
+
+func (p *envParser) readEscape() (byte, error) {
+	if p.pos+1 >= len(p.input) {
+		return 0, errors.New("trailing escape in environment word")
+	}
+	b := p.input[p.pos+1]
+	p.pos += 2
+	return b, nil
+}
+
+func (p *envParser) handleSimpleName(value *strings.Builder) bool {
+	if p.input[p.pos] != '$' {
+		return false
+	}
+	if p.pos+1 >= len(p.input) || !isEnvNameStart(p.input[p.pos+1]) {
+		return false
+	}
+	p.pos++
+	start := p.pos
+	for p.pos < len(p.input) && isEnvNameChar(p.input[p.pos]) {
+		p.pos++
+	}
+	resolved, _ := p.lookup(p.input[start:p.pos])
+	value.WriteString(resolved)
+	return true
 }
 
 func (p *envParser) requiredError(name, word string, empty bool) (envResult, error) {
@@ -368,8 +410,4 @@ func isEnvNameChar(char byte) bool {
 	return isEnvNameStart(char) || char >= '0' && char <= '9'
 }
 
-type errorMutator string
-
-func (e errorMutator) Mutate(_ context.Context, _ *yaml.Node) error {
-	return fmt.Errorf("%s", string(e))
-}
+var _ Mutator = (*envHandler)(nil)

@@ -19,15 +19,10 @@ func mergeNodes(dst, src *yaml.Node) *yaml.Node {
 }
 
 func mergeNode(dst, src *yaml.Node) *yaml.Node {
-	switch dst.Kind {
-	case yaml.MappingNode:
-		if src.Kind != yaml.MappingNode {
-			return src
-		}
-		return mergeMapping(dst, src)
-	default:
+	if dst.Kind != yaml.MappingNode || src.Kind != yaml.MappingNode {
 		return src
 	}
+	return mergeMapping(dst, src)
 }
 
 func mergeMapping(dst, src *yaml.Node) *yaml.Node {
@@ -89,12 +84,12 @@ func buildPath(parent *yaml.Node, index int) string {
 			}
 		}
 	case yaml.SequenceNode:
-		for i := 0; i < len(parent.Content); i++ {
+		for i := range parent.Content {
 			if i == index {
 				return fmt.Sprintf("$[%d]", i)
 			}
 		}
-	case yaml.DocumentNode:
+	case yaml.DocumentNode, yaml.ScalarNode, yaml.AliasNode:
 		return "$"
 	}
 

@@ -519,7 +519,11 @@ func TestLoadFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = root.Close() }()
+		defer func() {
+			if err := root.Close(); err != nil {
+				t.Errorf("Close() error = %v", err)
+			}
+		}()
 
 		got, err := gig.Load[cfg](
 			strings.NewReader("name: !file secret.txt\n"),
@@ -617,7 +621,7 @@ func TestLoadFile(t *testing.T) {
 	})
 }
 
-func TestLoadResolver(t *testing.T) { //nolint:tparallel
+func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir which requires sequential execution
 	t.Run("custom tag", func(t *testing.T) {
 		t.Parallel()
 		got, err := gig.Load[cfg](
@@ -928,10 +932,12 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel
 		}
 	})
 
-	t.Run("current dir fallback", func(t *testing.T) { //nolint:paralleltest
+	t.Run("current dir fallback", func(t *testing.T) { //nolint:paralleltest // t.Chdir requires sequential execution
 		d := t.TempDir()
 		t.Chdir(d)
-		_ = os.Remove(d)
+		if err := os.Remove(d); err != nil {
+			t.Fatalf("Remove() error = %v", err)
+		}
 
 		_, err := gig.Load[cfg](strings.NewReader("{}\n"))
 		if err != nil {
