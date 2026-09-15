@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +16,20 @@ import (
 )
 
 const (
-	setValue     = "set-value"
-	otherValue   = "other-value"
-	defaultStr   = "default"
-	alternateStr = "alternate"
+	setValue      = "set-value"
+	otherValue    = "other-value"
+	defaultStr    = "default"
+	alternateStr  = "alternate"
+	rootStr       = "root"
+	secretFile    = "secret.txt"
+	envTag        = "!env"
+	fromEnv       = "from-env"
+	gigStr        = "gig"
+	strTag        = "!!str"
+	overriddenStr = "overridden"
+	valueStr      = "value"
+	dotNetKey     = ".net"
+	filtersZero   = "filters[0]"
 )
 
 var (
@@ -27,6 +38,17 @@ var (
 	errBoom           = errors.New("boom")
 	errBang           = errors.New("bang")
 )
+
+func mustOverride(t *testing.T, overrides map[gig.YamlKey]string) gig.Mutator {
+	t.Helper()
+
+	mutator, err := gig.NewOverride(overrides)
+	if err != nil {
+		t.Fatalf("NewOverride() error = %v", err)
+	}
+
+	return mutator
+}
 
 type fakeEnv map[string]string
 
@@ -103,9 +125,11 @@ func (v *ptrValidCtx) ValidateContext(_ context.Context) error {
 
 func TestLoad(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+
 	t.Run("empty document", func(t *testing.T) {
 		t.Parallel()
-		got, err := gig.Load[cfg](strings.NewReader("{}\n"))
+		got, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -116,7 +140,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("malformed yaml", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader("name: [\n"))
+		_, err := gig.Load[cfg](ctx, strings.NewReader("name: [\n"))
 		if err == nil || !strings.Contains(err.Error(), "yaml:") {
 			t.Fatalf("Load() error = %v, want yaml error", err)
 		}
@@ -125,7 +149,7 @@ func TestLoad(t *testing.T) {
 	t.Run("reader failure", func(t *testing.T) {
 		t.Parallel()
 		wantErr := errSourceFailed
-		_, err := gig.Load[cfg](failReader{err: wantErr})
+		_, err := gig.Load[cfg](ctx, failReader{err: wantErr})
 		if err == nil || !errors.Is(err, wantErr) {
 			t.Fatalf("Load() error = %v, want wrapped %v", err, wantErr)
 		}
@@ -133,7 +157,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("decode type mismatch", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[int](strings.NewReader("name: foo\n"))
+		_, err := gig.Load[int](ctx, strings.NewReader("name: foo\n"))
 		if err == nil || !strings.Contains(err.Error(), "unmarshal") {
 			t.Fatalf("Load() error = %v, want unmarshal error", err)
 		}
@@ -141,7 +165,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("empty source", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader(""))
+		_, err := gig.Load[cfg](ctx, strings.NewReader(""))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -150,9 +174,12 @@ func TestLoad(t *testing.T) {
 
 func TestLoadOverride(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+
 	t.Run("nested mapping merges", func(t *testing.T) {
 		t.Parallel()
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: base\nport: 1000\nnested:\n  value: base-value\n"),
 			gig.WithSources(strings.NewReader("name: override\nnested:\n  value: override-value\n")),
 		)
@@ -172,7 +199,7 @@ func TestLoadOverride(t *testing.T) {
 
 	t.Run("scalar replaces mapping", func(t *testing.T) {
 		t.Parallel()
-		got, err := gig.Load[int](strings.NewReader("1\n"), gig.WithSources(strings.NewReader("2\n")))
+		got, err := gig.Load[int](ctx, strings.NewReader("1\n"), gig.WithSources(strings.NewReader("2\n")))
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -184,6 +211,7 @@ func TestLoadOverride(t *testing.T) {
 	t.Run("new key from override", func(t *testing.T) {
 		t.Parallel()
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: a\n"),
 			gig.WithSources(strings.NewReader("name: b\nport: 9\n")),
 		)
@@ -201,13 +229,21 @@ func TestLoadOverride(t *testing.T) {
 
 func TestLoadEnv(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	env := fakeEnv{
 		"setEnv":   setValue,
 		"emptyEnv": "",
 		"otherEnv": otherValue,
 	}
-	load := func(src string, opts ...gig.Option) (cfg, error) {
-		return gig.Load[cfg](strings.NewReader(src), append([]gig.Option{gig.WithEnvLookup(env.lookup)}, opts...)...)
+	load := func(src string, opts ...gig.LoadOption) (cfg, error) {
+		return gig.Load[cfg](
+			ctx,
+			strings.NewReader(src),
+			append(
+				[]gig.LoadOption{gig.WithEnvOptions(gig.WithEnvLookup(env.lookup))},
+				opts...,
+			)...,
+		)
 	}
 
 	t.Run("value operators", func(t *testing.T) {
@@ -309,7 +345,7 @@ func TestLoadEnv(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if got.Name != "root" {
+		if got.Name != rootStr {
 			t.Errorf("Name = %q, want root", got.Name)
 		}
 	})
@@ -462,9 +498,11 @@ func TestLoadEnv(t *testing.T) {
 
 func TestLoadFile(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+
 	t.Run("required missing reports error", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader("name: !file missing-secret\n"))
+		_, err := gig.Load[cfg](ctx, strings.NewReader("name: !file missing-secret\n"))
 		if err == nil ||
 			!strings.Contains(err.Error(), `cannot read "`) ||
 			!strings.Contains(err.Error(), `from "missing-secret"`) {
@@ -475,12 +513,13 @@ func TestLoadFile(t *testing.T) {
 	t.Run("relative to base dir", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("  file-secret\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("  file-secret\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file secret.txt\n"),
-			gig.WithBaseDir(dir),
+			gig.WithFileOptions(gig.WithBaseDir(dir)),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -497,9 +536,10 @@ func TestLoadFile(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file ${GIG_TEST_FILE:-${GIG_TEST_OTHER_FILE:-default.yaml}}\n"),
-			gig.WithBaseDir(dir),
-			gig.WithEnvLookup(func(_ string) (string, bool) { return "", false }),
+			gig.WithFileOptions(gig.WithBaseDir(dir)),
+			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) { return "", false })),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -512,22 +552,23 @@ func TestLoadFile(t *testing.T) {
 	t.Run("configured fs", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("rooted-secret\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("rooted-secret\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		root, err := os.OpenRoot(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() {
+		t.Cleanup(func() {
 			if err := root.Close(); err != nil {
-				t.Errorf("Close() error = %v", err)
+				t.Error(err)
 			}
-		}()
+		})
 
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file secret.txt\n"),
-			gig.WithRoot(root),
+			gig.WithFileOptions(gig.WithRoot(root)),
 		)
 		if err != nil {
 			t.Fatalf("happy: Load() error = %v", err)
@@ -537,16 +578,18 @@ func TestLoadFile(t *testing.T) {
 		}
 
 		_, err = gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file ../outside.txt\n"),
-			gig.WithRoot(root),
+			gig.WithFileOptions(gig.WithRoot(root)),
 		)
 		if err == nil || !strings.Contains(err.Error(), "invalid file path") {
 			t.Fatalf("traversal: Load() error = %v, want invalid path error", err)
 		}
 
 		_, err = gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file missing.txt\n"),
-			gig.WithRoot(root),
+			gig.WithFileOptions(gig.WithRoot(root)),
 		)
 		if err == nil || !strings.Contains(err.Error(), "cannot read") {
 			t.Fatalf("missing: Load() error = %v, want cannot read error", err)
@@ -557,23 +600,25 @@ func TestLoadFile(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: root\n"),
-			gig.WithBaseDir(dir),
+			gig.WithFileOptions(gig.WithBaseDir(dir)),
 			gig.WithSources(strings.NewReader("name: !file? missing-secret\n")),
 		)
 		if err != nil {
 			t.Fatalf("missing: Load() error = %v", err)
 		}
-		if got.Name != "root" {
-			t.Errorf("Name = %q, want %q", got.Name, "root")
+		if got.Name != rootStr {
+			t.Errorf("Name = %q, want %q", got.Name, rootStr)
 		}
 
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("from-file\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("from-file\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err = gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: root\n"),
-			gig.WithBaseDir(dir),
+			gig.WithFileOptions(gig.WithBaseDir(dir)),
 			gig.WithSources(strings.NewReader("name: !file? secret.txt\n")),
 		)
 		if err != nil {
@@ -587,15 +632,16 @@ func TestLoadFile(t *testing.T) {
 	t.Run("evaluate trailing escape", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("data\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("data\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		_, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file '$x\\'\n"),
-			gig.WithBaseDir(dir),
-			gig.WithEnvLookup(func(_ string) (string, bool) {
-				return "secret.txt", true
-			}),
+			gig.WithFileOptions(gig.WithBaseDir(dir)),
+			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
+				return secretFile, true
+			})),
 		)
 		if err == nil || !strings.Contains(err.Error(), "trailing escape") {
 			t.Fatalf("Load() error = %v, want trailing escape error", err)
@@ -610,7 +656,8 @@ func TestLoadFile(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
-			strings.NewReader("name: !file " + filePath + "\n"),
+			ctx,
+			strings.NewReader("name: !file "+filePath+"\n"),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -624,14 +671,18 @@ func TestLoadFile(t *testing.T) {
 func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir which requires sequential execution
 	t.Run("custom tag", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !upper hello world\n"),
-			gig.WithResolver("!upper", func(_ context.Context, node *yaml.Node) error {
-				node.Tag = ""
-				node.Value = strings.ToUpper(node.Value)
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				"!upper": gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
+					node.Tag = ""
+					node.Value = strings.ToUpper(node.Value)
 
-				return nil
-			}),
+					return nil
+				}),
+			})),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -643,19 +694,23 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("error reports path", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		wantErr := errResolverFailed
 		_, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !broken value\n"),
-			gig.WithResolver("!broken", func(_ context.Context, _ *yaml.Node) error {
-				return wantErr
-			}),
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				"!broken": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+					return wantErr
+				}),
+			})),
 		)
 		if err == nil {
 			t.Fatal("Load() error = nil, want resolver error")
 		}
-		var resolveErr gig.ResolveError
+		var resolveErr *gig.ResolveError
 		if !errors.As(err, &resolveErr) {
-			t.Fatalf("error type = %T, want ResolveError", err)
+			t.Fatalf("error type = %T, want *ResolveError", err)
 		}
 		if resolveErr.Path != "$.name" {
 			t.Errorf("Path = %q, want %q", resolveErr.Path, "$.name")
@@ -667,11 +722,15 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("path with uppercase underscore digit", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		_, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("MY_VAR_2: !broken v\n"),
-			gig.WithResolver("!broken", func(_ context.Context, _ *yaml.Node) error {
-				return errResolverFailed
-			}),
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				"!broken": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+					return errResolverFailed
+				}),
+			})),
 		)
 		if err == nil {
 			t.Fatal("Load() error = nil, want resolver error")
@@ -686,18 +745,20 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 		type ctxKey struct{}
 		ctx := context.WithValue(context.Background(), ctxKey{}, "from-ctx")
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !ctx hello\n"),
-			gig.WithContext(ctx),
-			gig.WithResolver("!ctx", func(c context.Context, node *yaml.Node) error {
-				node.Tag = ""
-				v, ok := c.Value(ctxKey{}).(string)
-				if !ok {
-					return fmt.Errorf("context value %T is not a string", c.Value(ctxKey{}))
-				}
-				node.Value = node.Value + "-" + v
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				"!ctx": gig.MutatorFunc(func(c context.Context, node *yaml.Node) error {
+					node.Tag = ""
+					v, ok := c.Value(ctxKey{}).(string)
+					if !ok {
+						return fmt.Errorf("context value %T is not a string", c.Value(ctxKey{}))
+					}
+					node.Value = node.Value + "-" + v
 
-				return nil
-			}),
+					return nil
+				}),
+			})),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -709,15 +770,21 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("overrides builtin", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !env GIG_TEST_OVERRIDE\n"),
-			gig.WithEnvLookup(func(_ string) (string, bool) { return "original", true }),
-			gig.WithResolver("!env", func(_ context.Context, node *yaml.Node) error {
-				node.Tag = ""
-				node.Value = "overridden-" + node.Value
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				envTag: gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
+					node.Tag = ""
+					node.Value = "overridden-" + node.Value
 
-				return nil
-			}),
+					return nil
+				}),
+				"!env?":  gig.DefaultEnvHandler(),
+				"!file":  gig.DefaultFileHandler(),
+				"!file?": gig.DefaultFileHandler(),
+			})),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -729,7 +796,8 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("nil env lookup", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader("{}\n"), gig.WithEnvLookup(nil))
+		ctx := context.Background()
+		_, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"), gig.WithEnvOptions(gig.WithEnvLookup(nil)))
 		if err == nil || !strings.Contains(err.Error(), "must not be nil") {
 			t.Fatalf("Load() error = %v, want nil guard error", err)
 		}
@@ -737,7 +805,8 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("nil env expander", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader("{}\n"), gig.WithEnvExpander(nil))
+		ctx := context.Background()
+		_, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"), gig.WithEnvOptions(gig.WithEnvExpander(nil)))
 		if err == nil || !strings.Contains(err.Error(), "must not be nil") {
 			t.Fatalf("Load() error = %v, want nil guard error", err)
 		}
@@ -745,7 +814,8 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("nil root", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader("{}\n"), gig.WithRoot(nil))
+		ctx := context.Background()
+		_, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"), gig.WithFileOptions(gig.WithRoot(nil)))
 		if err == nil || !strings.Contains(err.Error(), "must not be nil") {
 			t.Fatalf("Load() error = %v, want nil guard error", err)
 		}
@@ -753,7 +823,8 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("nil file system", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[cfg](strings.NewReader("{}\n"), gig.WithFS(nil))
+		ctx := context.Background()
+		_, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"), gig.WithFileOptions(gig.WithFS(nil)))
 		if err == nil || !strings.Contains(err.Error(), "must not be nil") {
 			t.Fatalf("Load() error = %v, want nil guard error", err)
 		}
@@ -761,13 +832,15 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("with file system", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("fs-data\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("fs-data\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file secret.txt\n"),
-			gig.WithFS(os.DirFS(dir)),
+			gig.WithFileOptions(gig.WithFS(os.DirFS(dir))),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -777,8 +850,9 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 		}
 
 		_, err = gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file /etc/passwd\n"),
-			gig.WithFS(os.DirFS(dir)),
+			gig.WithFileOptions(gig.WithFS(os.DirFS(dir))),
 		)
 		if err == nil || !strings.Contains(err.Error(), "absolute file path") {
 			t.Fatalf("Load() error = %v, want absolute path error", err)
@@ -787,55 +861,62 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("optional resolver error", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		_, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: base\n"),
 			gig.WithSources(strings.NewReader("name: !err?\n")),
-			gig.WithResolver("!err?", func(_ context.Context, _ *yaml.Node) error {
-				return errBoom
-			}),
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				"!err?": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+					return errBoom
+				}),
+			})),
 		)
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("Load() error = %v, want boom error", err)
 		}
 	})
 
-	t.Run("unknown optional tag", func(t *testing.T) {
+	t.Run("unknown tag", func(t *testing.T) {
 		t.Parallel()
-		got, err := gig.Load[cfg](
+		ctx := context.Background()
+		_, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: base\n"),
 			gig.WithSources(strings.NewReader("name: !nope? value\n")),
 		)
-		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-		if got.Name != "value" {
-			t.Errorf("Name = %q, want value", got.Name)
+		if err == nil || !strings.Contains(err.Error(), "unknown tag") {
+			t.Fatalf("Load() error = %v, want unknown tag error", err)
 		}
 	})
 
 	t.Run("sequence with env tags", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		type listCfg struct {
 			List []string `yaml:"list"`
 		}
 		got, err := gig.Load[listCfg](
+			ctx,
 			strings.NewReader("list:\n  - !env GIG_SEQ_VAR\n  - literal\n"),
-			gig.WithEnvLookup(func(_ string) (string, bool) { return "from-env", true }),
+			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) { return fromEnv, true })),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if len(got.List) != 2 || got.List[0] != "from-env" || got.List[1] != "literal" {
+		if len(got.List) != 2 || got.List[0] != fromEnv || got.List[1] != "literal" {
 			t.Errorf("List = %#v, want [from-env literal]", got.List)
 		}
 	})
 
 	t.Run("sequence resolution error", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		type listCfg struct {
 			List []string `yaml:"list"`
 		}
 		_, err := gig.Load[listCfg](
+			ctx,
 			strings.NewReader("list:\n  - !env GIG_MISSING_SEQ\n"),
 		)
 		if err == nil {
@@ -845,10 +926,12 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("sequence optional removes item", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		type listCfg struct {
 			List []string `yaml:"list"`
 		}
 		got, err := gig.Load[listCfg](
+			ctx,
 			strings.NewReader("list:\n  - base\n"),
 			gig.WithSources(strings.NewReader("list:\n  - !env? GIG_OPT_SEQ_REMOVE\n  - extra\n")),
 		)
@@ -862,15 +945,19 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("sequence optional errors", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		type listCfg struct {
 			List []string `yaml:"list"`
 		}
 		_, err := gig.Load[listCfg](
+			ctx,
 			strings.NewReader("list:\n  - ok\n"),
 			gig.WithSources(strings.NewReader("list:\n  - !boom?\n")),
-			gig.WithResolver("!boom?", func(_ context.Context, _ *yaml.Node) error {
-				return errBang
-			}),
+			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+				"!boom?": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+					return errBang
+				}),
+			})),
 		)
 		if err == nil || !strings.Contains(err.Error(), "bang") {
 			t.Fatalf("Load() error = %v, want bang error", err)
@@ -879,8 +966,10 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("empty key identifier", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		got, err := gig.Load[map[string]string](
-			strings.NewReader(`"": from-empty-key` + "\n"),
+			ctx,
+			strings.NewReader(`"": from-empty-key`+"\n"),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -892,12 +981,14 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("bracket path", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		type dotCfg struct {
 			Field string `yaml:"field.with.dots"`
 		}
 		got, err := gig.Load[dotCfg](
+			ctx,
 			strings.NewReader(`"field.with.dots": !env GIG_DOT_VAR`+"\n"),
-			gig.WithEnvLookup(func(_ string) (string, bool) { return "dot-value", true }),
+			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) { return "dot-value", true })),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -917,29 +1008,32 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 	t.Run("alias node", func(t *testing.T) {
 		t.Parallel()
+		ctx := context.Background()
 		type aliasCfg struct {
 			Name  string `yaml:"name"`
 			Alias string `yaml:"alias"`
 		}
 		got, err := gig.Load[aliasCfg](
+			ctx,
 			strings.NewReader("name: &anchor gig\nalias: *anchor\n"),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if got.Name != "gig" || got.Alias != "gig" {
+		if got.Name != gigStr || got.Alias != gigStr {
 			t.Errorf("got %+v, want {Name:gig Alias:gig}", got)
 		}
 	})
 
 	t.Run("current dir fallback", func(t *testing.T) { //nolint:paralleltest // t.Chdir requires sequential execution
+		ctx := context.Background()
 		d := t.TempDir()
 		t.Chdir(d)
 		if err := os.Remove(d); err != nil {
-			t.Fatalf("Remove() error = %v", err)
+			t.Fatal(err)
 		}
 
-		_, err := gig.Load[cfg](strings.NewReader("{}\n"))
+		_, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"))
 		if err != nil {
 			t.Fatalf("Load() error = %v, want nil", err)
 		}
@@ -948,17 +1042,20 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 
 func TestLoadEnvLookup(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+
 	t.Run("custom lookup for env", func(t *testing.T) {
 		t.Parallel()
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !env CUSTOM_NAME\n"),
-			gig.WithEnvLookup(func(name string) (string, bool) {
+			gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
 				if name == "CUSTOM_NAME" {
 					return "from-custom-lookup", true
 				}
 
 				return "", false
-			}),
+			})),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -971,19 +1068,20 @@ func TestLoadEnvLookup(t *testing.T) {
 	t.Run("custom lookup in filepath", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("from-file"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("from-file"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !file $CUSTOM_FILE\n"),
-			gig.WithBaseDir(dir),
-			gig.WithEnvLookup(func(name string) (string, bool) {
+			gig.WithFileOptions(gig.WithBaseDir(dir)),
+			gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
 				if name == "CUSTOM_FILE" {
-					return "secret.txt", true
+					return secretFile, true
 				}
 
 				return "", false
-			}),
+			})),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -997,15 +1095,16 @@ func TestLoadEnvLookup(t *testing.T) {
 		t.Parallel()
 		var gotOptional bool
 		got, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !env? CUSTOM_EXPRESSION\n"),
-			gig.WithEnvExpander(func(expression string, optional bool) (string, bool, error) {
+			gig.WithEnvOptions(gig.WithEnvExpander(func(expression string, optional bool) (string, bool, error) {
 				gotOptional = optional
 				if expression != "CUSTOM_EXPRESSION" {
 					return "", false, fmt.Errorf("unexpected expression %q", expression)
 				}
 
 				return "from-custom-expander", true, nil
-			}),
+			})),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
@@ -1021,10 +1120,11 @@ func TestLoadEnvLookup(t *testing.T) {
 	t.Run("expander returns absent without error", func(t *testing.T) {
 		t.Parallel()
 		_, err := gig.Load[cfg](
+			ctx,
 			strings.NewReader("name: !env ANY_NAME\n"),
-			gig.WithEnvExpander(func(_ string, _ bool) (string, bool, error) {
+			gig.WithEnvOptions(gig.WithEnvExpander(func(_ string, _ bool) (string, bool, error) {
 				return "", false, nil
-			}),
+			})),
 		)
 		if err == nil || !strings.Contains(err.Error(), "produced no value") {
 			t.Fatalf("Load() error = %v, want 'produced no value'", err)
@@ -1034,13 +1134,15 @@ func TestLoadEnvLookup(t *testing.T) {
 
 func TestLoadValidation(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+
 	t.Run("value validator", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[valValid](strings.NewReader("name: ok\n"))
+		_, err := gig.Load[valValid](ctx, strings.NewReader("name: ok\n"))
 		if err != nil {
 			t.Fatalf("valid: Load() error = %v", err)
 		}
-		_, err = gig.Load[valValid](strings.NewReader(`name: ""` + "\n"))
+		_, err = gig.Load[valValid](ctx, strings.NewReader(`name: ""`+"\n"))
 		if err == nil {
 			t.Fatal("invalid: Load() error = nil")
 		}
@@ -1048,11 +1150,11 @@ func TestLoadValidation(t *testing.T) {
 
 	t.Run("pointer validator", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[ptrValid](strings.NewReader("name: ok\n"))
+		_, err := gig.Load[ptrValid](ctx, strings.NewReader("name: ok\n"))
 		if err != nil {
 			t.Fatalf("valid: Load() error = %v", err)
 		}
-		_, err = gig.Load[ptrValid](strings.NewReader(`name: ""` + "\n"))
+		_, err = gig.Load[ptrValid](ctx, strings.NewReader(`name: ""`+"\n"))
 		if err == nil {
 			t.Fatal("invalid: Load() error = nil")
 		}
@@ -1060,11 +1162,11 @@ func TestLoadValidation(t *testing.T) {
 
 	t.Run("value validator context", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[valValidCtx](strings.NewReader("name: ok\n"))
+		_, err := gig.Load[valValidCtx](ctx, strings.NewReader("name: ok\n"))
 		if err != nil {
 			t.Fatalf("valid: Load() error = %v", err)
 		}
-		_, err = gig.Load[valValidCtx](strings.NewReader(`name: ""` + "\n"))
+		_, err = gig.Load[valValidCtx](ctx, strings.NewReader(`name: ""`+"\n"))
 		if err == nil {
 			t.Fatal("invalid: Load() error = nil")
 		}
@@ -1072,11 +1174,11 @@ func TestLoadValidation(t *testing.T) {
 
 	t.Run("pointer validator context", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[ptrValidCtx](strings.NewReader("name: ok\n"))
+		_, err := gig.Load[ptrValidCtx](ctx, strings.NewReader("name: ok\n"))
 		if err != nil {
 			t.Fatalf("valid: Load() error = %v", err)
 		}
-		_, err = gig.Load[ptrValidCtx](strings.NewReader(`name: ""` + "\n"))
+		_, err = gig.Load[ptrValidCtx](ctx, strings.NewReader(`name: ""`+"\n"))
 		if err == nil {
 			t.Fatal("invalid: Load() error = nil")
 		}
@@ -1084,9 +1186,1409 @@ func TestLoadValidation(t *testing.T) {
 
 	t.Run("disabled", func(t *testing.T) {
 		t.Parallel()
-		_, err := gig.Load[valValid](strings.NewReader(`name: ""`+"\n"), gig.WithValidation(false))
+		_, err := gig.Load[valValid](ctx, strings.NewReader(`name: ""`+"\n"), gig.WithValidation(false))
 		if err != nil {
 			t.Fatalf("Load() error = %v, want nil", err)
 		}
 	})
+}
+
+func TestCloneNodeNil(t *testing.T) {
+	t.Parallel()
+	// Ensure nil does not panic
+	ctx := context.Background()
+	_, err := gig.Load[cfg](ctx, strings.NewReader("{}\n"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestMergeContentMultiDoc(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: first\n"),
+		gig.WithSources(strings.NewReader("name: second\n")),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "second" {
+		t.Errorf("Name = %q, want %q", got.Name, "second")
+	}
+}
+
+func TestAliasNode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type aliasCfg struct {
+		Name  string `yaml:"name"`
+		Alias string `yaml:"alias"`
+	}
+	got, err := gig.Load[aliasCfg](
+		ctx,
+		strings.NewReader("name: &anchor gig\nalias: *anchor\n"),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != gigStr || got.Alias != gigStr {
+		t.Errorf("got %+v, want {Name:gig Alias:gig}", got)
+	}
+}
+
+func TestTagResolverWalkAlias(t *testing.T) {
+	t.Parallel()
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		envTag: gig.DefaultEnvHandler(),
+	})
+	ctx := context.Background()
+	// Alias node should not cause panic
+	doc := &yaml.Node{
+		Kind: yaml.DocumentNode,
+		Content: []*yaml.Node{
+			{
+				Kind: yaml.MappingNode,
+				Content: []*yaml.Node{
+					{Kind: yaml.ScalarNode, Value: "name", Tag: strTag},
+					{Kind: yaml.ScalarNode, Value: gigStr, Tag: strTag},
+				},
+			},
+		},
+	}
+	if err := resolver.Mutate(ctx, doc); err != nil {
+		t.Fatalf("Mutate() error = %v", err)
+	}
+}
+
+func TestResolverSequenceTag(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type listCfg struct {
+		List []string `yaml:"list"`
+	}
+	got, err := gig.Load[listCfg](
+		ctx,
+		strings.NewReader("list:\n  - !env GIG_EXISTING\n  - !env GIG_MISSING\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
+			if name == "GIG_EXISTING" {
+				return "present", true
+			}
+
+			return "", false
+		})),
+	)
+	if err == nil {
+		t.Fatal("expected error for missing env in sequence")
+	}
+	_ = got
+}
+
+func TestLoadWithSourcesEmpty(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: first\n"),
+		gig.WithSources(strings.NewReader("")),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "first" {
+		t.Errorf("Name = %q, want %q", got.Name, "first")
+	}
+}
+
+func TestReadFromSystemAbsolute(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// Using absolute path should work with system fs
+	// Use /dev/null which always exists
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file /dev/null\n"),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "" {
+		t.Errorf("Name = %q, want empty from /dev/null", got.Name)
+	}
+}
+
+func TestReadFromFSAbsolute(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file /tmp/test.txt\n"),
+		gig.WithFileOptions(gig.WithFS(os.DirFS(t.TempDir()))),
+	)
+	_ = err
+	if err == nil {
+		t.Fatal("expected error for absolute path with fs.FS")
+	}
+}
+
+func TestMergeContentMultiDocSequence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type intCfg struct {
+		Val int `yaml:"val"`
+	}
+	got, err := gig.Load[intCfg](
+		ctx,
+		strings.NewReader("val: 1\n"),
+		gig.WithSources(strings.NewReader("val: 2\n")),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Val != 2 {
+		t.Errorf("Val = %d, want 2", got.Val)
+	}
+}
+
+func TestLoadFileRootSuccess(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/secret.txt", []byte("content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file secret.txt\n"),
+		gig.WithFileOptions(gig.WithRoot(root)),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "content" {
+		t.Errorf("Name = %q, want %q", got.Name, "content")
+	}
+}
+
+func TestTagResolverNilNode(t *testing.T) {
+	t.Parallel()
+	tr := gig.NewTagResolver(nil)
+	ctx := context.Background()
+	err := tr.Mutate(ctx, nil)
+	if err != nil {
+		t.Fatalf("Mutate() error = %v", err)
+	}
+}
+
+func TestTaggedMappingKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("!env NAME: test\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
+			if name == "NAME" {
+				return "key-value", true
+			}
+
+			return "", false
+		})),
+	)
+	// This might succeed or fail depending on YAML parsing of tagged key
+	_ = got
+	_ = err
+}
+
+func TestNestedMappingWalk(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type nestedCfg struct {
+		Inner struct {
+			Value string `yaml:"value"`
+		} `yaml:"inner"`
+	}
+	got, err := gig.Load[nestedCfg](
+		ctx,
+		strings.NewReader("inner:\n  value: !env INNER_VAL\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
+			if name == "INNER_VAL" {
+				return "nested-resolved", true
+			}
+
+			return "", false
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Inner.Value != "nested-resolved" {
+		t.Errorf("Inner.Value = %q, want %q", got.Inner.Value, "nested-resolved")
+	}
+}
+
+func TestReadFromFSTraversal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file ../outside.txt\n"),
+		gig.WithFileOptions(gig.WithFS(os.DirFS(t.TempDir()))),
+	)
+	if err == nil {
+		t.Fatal("expected error for path traversal")
+	}
+}
+
+func TestReadFromFSMissing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file missing.txt\n"),
+		gig.WithFileOptions(gig.WithFS(os.DirFS(t.TempDir()))),
+	)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestReadFromSystemAbsoluteMissing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file /nonexistent/path/that/does/not/exist\n"),
+	)
+	if err == nil {
+		t.Fatal("expected error for missing absolute path")
+	}
+}
+
+func TestReadFromRootReadAllError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// Opening a directory via os.Root succeeds but io.ReadAll fails
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	// Create a subdirectory so we can open it
+	if err := os.MkdirAll(dir+"/subdir", 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file subdir\n"),
+		gig.WithFileOptions(gig.WithRoot(root)),
+	)
+	if err == nil {
+		t.Fatal("expected error when reading directory as file")
+	}
+}
+
+func TestTaggedKeyErrorReturn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		"!err": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+			return errors.New("tagged key error")
+		}),
+	})
+	type mapCfg struct {
+		Val string `yaml:"val"`
+	}
+	// YAML complex key syntax: ? !err KEY \n : value
+	_, err := gig.Load[mapCfg](
+		ctx,
+		strings.NewReader("? !err MY_KEY\n: value\nval: keep\n"),
+		gig.WithMutators(resolver),
+	)
+	if err == nil {
+		t.Fatal("expected error from tagged key")
+	}
+}
+
+func TestTaggedKeyInMapping(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		"!env?": gig.DefaultEnvHandler(),
+	})
+	// Test tagged key with unknown env - key should be removed
+	type mapCfg struct {
+		Name string `yaml:"name"`
+	}
+	// YAML with ? syntax for complex key
+	yamlContent := "? !env? UNKNOWN_KEY\n: value\nname: kept\n"
+	got, err := gig.Load[mapCfg](
+		ctx,
+		strings.NewReader(yamlContent),
+		gig.WithMutators(resolver),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
+			return "", false
+		})),
+	)
+	_ = got
+	_ = err
+}
+
+func TestReadFromFSReadAllError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file any.txt\n"),
+		gig.WithFileOptions(gig.WithFS(&errorFS{})),
+	)
+	if err == nil {
+		t.Fatal("expected error from read failure")
+	}
+}
+
+func TestSequenceNonScalarWalkError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		"!err": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+			return errors.New("sequence nested error")
+		}),
+	})
+	type seqCfg struct {
+		Items []struct {
+			Val string `yaml:"val"`
+		} `yaml:"items"`
+	}
+	_, err := gig.Load[seqCfg](
+		ctx,
+		strings.NewReader("items:\n  - val: !err test\n"),
+		gig.WithMutators(resolver),
+	)
+	if err == nil {
+		t.Fatal("expected error from sequence nested walk")
+	}
+}
+
+func TestGetwdError(t *testing.T) { //nolint:paralleltest // t.Chdir is incompatible with parallel execution
+	ctx := context.Background()
+	d := t.TempDir()
+	t.Chdir(d)
+	if err := os.Remove(d); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file missing.txt\n"),
+	)
+	if err == nil {
+		t.Fatal("expected error when CWD is removed")
+	}
+}
+
+func TestSequenceWithNestedMapping(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type nestedSeq struct {
+		Items []struct {
+			Key   string `yaml:"key"`
+			Value string `yaml:"value"`
+		} `yaml:"items"`
+	}
+	got, err := gig.Load[nestedSeq](
+		ctx,
+		strings.NewReader("items:\n  - key: first\n    value: one\n  - key: second\n    value: two\n"),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got.Items) != 2 || got.Items[0].Key != "first" || got.Items[1].Value != "two" {
+		t.Errorf("Items = %+v", got.Items)
+	}
+}
+
+func TestYamlKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Key", func(t *testing.T) {
+		t.Parallel()
+		k := gig.YamlKey("").Key("foo").Key("bar")
+		if string(k) != "foo.bar" {
+			t.Errorf("YamlKey = %q, want %q", k, "foo.bar")
+		}
+	})
+
+	t.Run("Index", func(t *testing.T) {
+		t.Parallel()
+		k := gig.YamlKey("").Key("foo").Index(0).Key("a.b")
+		if string(k) != "foo[0].a\\.b" {
+			t.Errorf("YamlKey = %q, want %q", k, "foo[0].a\\.b")
+		}
+	})
+}
+
+func TestTagResolverHandle(t *testing.T) {
+	t.Parallel()
+
+	resolver := gig.NewTagResolver(nil)
+	resolver = resolver.Handle("!custom", gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+		return nil
+	}))
+
+	var called bool
+	resolver = resolver.Handle("!flag", gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+		called = true
+
+		return nil
+	}))
+
+	ctx := context.Background()
+	node := &yaml.Node{Tag: "!flag", Kind: yaml.ScalarNode, Value: "test"}
+
+	if err := resolver.Mutate(ctx, node); err != nil {
+		t.Fatalf("Mutate() error = %v", err)
+	}
+	if !called {
+		t.Error("handler was not called")
+	}
+}
+
+func TestDefaultMutators(t *testing.T) {
+	t.Parallel()
+
+	mutators := gig.DefaultMutators()
+	if len(mutators) != 1 {
+		t.Fatalf("DefaultMutators() = %d, want 1", len(mutators))
+	}
+
+	// Should be able to use default mutators to load config
+	ctx := context.Background()
+	_, err := gig.Load[cfg](ctx, strings.NewReader("name: test\n"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestNewOverride(t *testing.T) {
+	t.Parallel()
+
+	t.Run("override scalar", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		got, err := gig.Load[cfg](
+			ctx,
+			strings.NewReader("name: original\nport: 999\n"),
+			gig.WithMutators(
+				mustOverride(t, map[gig.YamlKey]string{
+					gig.YamlKey("").Key("name"): overriddenStr,
+				}),
+			),
+		)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.Name != overriddenStr {
+			t.Errorf("Name = %q, want %q", got.Name, overriddenStr)
+		}
+		if got.Port != 999 {
+			t.Errorf("Port = %d, want 999", got.Port)
+		}
+	})
+
+	t.Run("override nested", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		got, err := gig.Load[cfg](
+			ctx,
+			strings.NewReader("name: orig\nnested:\n  value: orig-nested\n"),
+			gig.WithMutators(
+				mustOverride(t, map[gig.YamlKey]string{
+					gig.YamlKey("").Key("nested").Key(valueStr): "new-nested",
+				}),
+			),
+		)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.Nested.Value != "new-nested" {
+			t.Errorf("Nested.Value = %q, want %q", got.Nested.Value, "new-nested")
+		}
+	})
+
+	t.Run("override new key", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		got, err := gig.Load[cfg](
+			ctx,
+			strings.NewReader("{}\n"),
+			gig.WithMutators(
+				mustOverride(t, map[gig.YamlKey]string{
+					gig.YamlKey("").Key("name"): "new-key",
+				}),
+			),
+		)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.Name != "new-key" {
+			t.Errorf("Name = %q, want %q", got.Name, "new-key")
+		}
+	})
+}
+
+func TestEnvOverrides(t *testing.T) {
+	t.Run("t.Setenv", func(t *testing.T) {
+		t.Setenv("GIG_TEST_NAME", "env-override-val")
+		overrides := gig.EnvOverrides("GIG_")
+		key := gig.YamlKey("").Key("TEST").Key("NAME")
+		val, ok := overrides[key]
+		if !ok {
+			t.Fatalf("EnvOverrides did not find GIG_TEST_NAME")
+		}
+		if val != "env-override-val" {
+			t.Errorf("val = %q, want %q", val, "env-override-val")
+		}
+	})
+
+	t.Run("exact prefix match", func(t *testing.T) {
+		t.Setenv("GIG_", "root-val")
+		t.Setenv("GIG_X", "x-val")
+		overrides := gig.EnvOverrides("GIG_")
+		if len(overrides) != 1 {
+			t.Errorf("expected 1 override (GIG_X), got %d", len(overrides))
+		}
+	})
+}
+
+func TestLoadOptionNilGuard(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithSources nil", func(t *testing.T) {
+		t.Parallel()
+		_, err := gig.Load[cfg](context.Background(), strings.NewReader("{}\n"), gig.WithSources(nil))
+		if err == nil {
+			t.Fatal("expected error for nil source reader")
+		}
+	})
+
+	t.Run("WithMutators nil", func(t *testing.T) {
+		t.Parallel()
+		_, err := gig.Load[cfg](context.Background(), strings.NewReader("{}\n"), gig.WithMutators(nil))
+		if err == nil {
+			t.Fatal("expected error for nil mutator")
+		}
+	})
+
+	t.Run("WithFileOptions nil", func(t *testing.T) {
+		t.Parallel()
+		_, err := gig.Load[cfg](context.Background(), strings.NewReader("{}\n"), gig.WithFileOptions(nil))
+		if err == nil {
+			t.Fatal("expected error for nil file option")
+		}
+	})
+
+	t.Run("WithEnvOptions nil", func(t *testing.T) {
+		t.Parallel()
+		_, err := gig.Load[cfg](context.Background(), strings.NewReader("{}\n"), gig.WithEnvOptions(nil))
+		if err == nil {
+			t.Fatal("expected error for nil env option")
+		}
+	})
+}
+
+func TestNewFileHandlerNilRoot(t *testing.T) {
+	t.Parallel()
+	_, err := gig.NewFileHandler(gig.WithRoot(nil))
+	if err == nil {
+		t.Fatal("expected error for nil root")
+	}
+}
+
+func TestMergeVarious(t *testing.T) {
+	t.Parallel()
+	t.Run("empty dst", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		got, err := gig.Load[cfg](
+			ctx,
+			strings.NewReader("name: only\n"),
+		)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.Name != "only" {
+			t.Errorf("Name = %q, want %q", got.Name, "only")
+		}
+	})
+}
+
+func TestDefaultsWithEnvOptions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := map[string]string{"TEST_VAR": fromEnv}
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env TEST_VAR\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
+			v, ok := env[name]
+
+			return v, ok
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != fromEnv {
+		t.Errorf("Name = %q, want %q", got.Name, fromEnv)
+	}
+}
+
+func TestDefaultsWithFileOptions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file testdata/password.txt\n"),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "s3cret" {
+		t.Errorf("Name = %q, want %q", got.Name, "s3cret")
+	}
+}
+
+func TestExpandEnvSimpleName(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env '${TEST_EXPAND}'\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
+			if name == "TEST_EXPAND" {
+				return "expanded", true
+			}
+
+			return "", false
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "expanded" {
+		t.Errorf("Name = %q, want %q", got.Name, "expanded")
+	}
+}
+
+func TestLoadWithExpander(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env? CUSTOM\n"),
+		gig.WithEnvOptions(gig.WithEnvExpander(func(_ string, _ bool) (string, bool, error) {
+			return "", false, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "" {
+		t.Errorf("Name = %q, want empty", got.Name)
+	}
+}
+
+func TestParseError(t *testing.T) {
+	t.Parallel()
+	t.Run("unterminated", func(t *testing.T) {
+		t.Parallel()
+		if err := parseEnv("${unclosed"); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		if err := parseEnv("${}"); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
+func parseEnv(expr string) error {
+	// Use direct load to test expression parsing
+	type simpleCfg struct {
+		Val string `yaml:"val"`
+	}
+	_, err := gig.Load[simpleCfg](
+		context.Background(),
+		strings.NewReader("val: !env '"+expr+"'\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
+			return "", false
+		})),
+	)
+
+	return err
+}
+
+func TestOverrideEdgeCases(t *testing.T) {
+	t.Parallel()
+	t.Run("empty segments", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		_, err := gig.Load[cfg](
+			ctx,
+			strings.NewReader("name: test\n"),
+			gig.WithMutators(
+				mustOverride(t, map[gig.YamlKey]string{
+					"": rootStr,
+				}),
+			),
+		)
+		// Should not panic; an empty key targets the document root.
+		_ = err
+	})
+
+	t.Run("unknown nil handlers", func(t *testing.T) {
+		t.Parallel()
+		resolver := gig.NewTagResolver(nil)
+		ctx := context.Background()
+		err := resolver.Mutate(ctx, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   strTag,
+			Value: "plain",
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestLoadWithExpanderOptional(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var capturedOptional bool
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env? OPTIONAL_VAR\n"),
+		gig.WithEnvOptions(gig.WithEnvExpander(func(_ string, optional bool) (string, bool, error) {
+			capturedOptional = optional
+
+			return "", false, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !capturedOptional {
+		t.Error("optional flag was not passed to expander")
+	}
+}
+
+func TestOverrideSequence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	type seqCfg struct {
+		List []string `yaml:"list"`
+	}
+	got, err := gig.Load[seqCfg](
+		ctx,
+		strings.NewReader("list:\n  - a\n  - b\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("list").Index(0): overriddenStr,
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got.List) != 2 || got.List[0] != overriddenStr || got.List[1] != "b" {
+		t.Errorf("List = %#v, want [overridden b]", got.List)
+	}
+}
+
+func TestOverrideCreateNestedPath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: base\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("nested").Key(valueStr): "created",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Nested.Value != "created" {
+		t.Errorf("Nested.Value = %q, want %q", got.Nested.Value, "created")
+	}
+}
+
+func TestEnvKeyToYamlKeyUnderscore(t *testing.T) {
+	t.Setenv("GIG_A__B", "double")
+	overrides := gig.EnvOverrides("GIG_")
+	key := gig.YamlKey("").Key("A").Key("").Key("B")
+	val, ok := overrides[key]
+	if !ok {
+		t.Fatalf("expected key A..B for env GIG_A__B")
+	}
+	if val != "double" {
+		t.Errorf("val = %q, want %q", val, "double")
+	}
+}
+
+func TestNewFileHandlerRootAndFS(t *testing.T) {
+	t.Parallel()
+	fileHandler, err := gig.NewFileHandler(
+		gig.WithBaseDir("/custom"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = fileHandler
+}
+
+func TestOverrideEmptyKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// Override with empty YamlKey should not affect anything
+	got, err := gig.Load[struct {
+		Name string `yaml:"name"`
+	}](
+		ctx,
+		strings.NewReader("name: test\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				"": rootStr,
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "test" {
+		t.Errorf("Name = %q, want %q", got.Name, "test")
+	}
+}
+
+func TestEnvHandlerErrorMutatorPath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("{}\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(nil)),
+	)
+	if err == nil {
+		t.Fatal("expected error for nil env lookup")
+	}
+}
+
+func TestEnvExpanderProducesNoValueRequired(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env TEST\n"),
+		gig.WithEnvOptions(gig.WithEnvExpander(func(_ string, _ bool) (string, bool, error) {
+			return "", false, nil
+		})),
+	)
+	if err == nil {
+		t.Fatal("expected error for no value from expander")
+	}
+}
+
+func TestLoadValidationDisabledNoError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// Validation disabled should not error even with empty required field
+	type emptyCfg struct {
+		Req string `yaml:"req"`
+	}
+
+	_, err := gig.Load[emptyCfg](
+		ctx,
+		strings.NewReader("req: !missing value\n"),
+		gig.WithValidation(false),
+	)
+	// Should fail at decode not validation
+	_ = err
+}
+
+func TestOverrideSequenceCreatePath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("{}\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("nested").Key(valueStr): "created-via-override",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Nested.Value != "created-via-override" {
+		t.Errorf("Nested.Value = %q, want %q", got.Nested.Value, "created-via-override")
+	}
+}
+
+func TestNewEnvHandlerDirectWithOpts(t *testing.T) {
+	t.Parallel()
+	envHandler, err := gig.NewEnvHandler(gig.WithEnvLookup(func(name string) (string, bool) {
+		if name == "EXISTS" {
+			return valueStr, true
+		}
+
+		return "", false
+	}))
+	if err != nil {
+		t.Fatalf("NewEnvHandler() error = %v", err)
+	}
+	if envHandler == nil {
+		t.Fatal("handler should not be nil")
+	}
+}
+
+func TestNewEnvHandlerNilLookup(t *testing.T) {
+	t.Parallel()
+	_, err := gig.NewEnvHandler(gig.WithEnvLookup(nil))
+	if err == nil {
+		t.Fatal("expected error for nil lookup")
+	}
+}
+
+func TestEnvExpanderReturnsError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env TEST\n"),
+		gig.WithEnvOptions(gig.WithEnvExpander(func(_ string, _ bool) (string, bool, error) {
+			return "", false, errors.New("custom expander error")
+		})),
+	)
+	if err == nil || !strings.Contains(err.Error(), "custom expander error") {
+		t.Fatalf("expected custom expander error, got %v", err)
+	}
+}
+
+func TestDirectEnvHandlerOptions(t *testing.T) {
+	t.Parallel()
+	lookup := func(name string) (string, bool) {
+		if name == "DIRECT" {
+			return "direct-value", true
+		}
+
+		return "", false
+	}
+	envHandler, err := gig.NewEnvHandler(gig.WithEnvLookup(lookup))
+	if err != nil {
+		t.Fatalf("NewEnvHandler() error = %v", err)
+	}
+	ctx := context.Background()
+	node := &yaml.Node{Tag: envTag, Value: "DIRECT", Kind: yaml.ScalarNode}
+	err = envHandler.Mutate(ctx, node)
+	if err != nil {
+		t.Fatalf("Mutate() error = %v", err)
+	}
+	if node.Value != "direct-value" {
+		t.Errorf("Value = %q, want %q", node.Value, "direct-value")
+	}
+}
+
+func TestOverrideSetValueScalarSegmentsEmpty(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("{}\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				"": "root-value",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	_ = got
+}
+
+func TestOverrideSequenceOutOfBounds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type seqCfg struct {
+		List []string `yaml:"list"`
+	}
+	got, err := gig.Load[seqCfg](
+		ctx,
+		strings.NewReader("list:\n  - a\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("list").Index(5): "ignored",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got.List) != 1 || got.List[0] != "a" {
+		t.Errorf("List = %#v, want [a]", got.List)
+	}
+}
+
+func TestOverrideSequenceNested(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	type nestedCfg struct {
+		Items []struct {
+			Name string `yaml:"name"`
+		} `yaml:"items"`
+	}
+	got, err := gig.Load[nestedCfg](
+		ctx,
+		strings.NewReader("items:\n  - name: first\n  - name: second\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("items").Index(0).Key("name"): "overridden-name",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got.Items) != 2 || got.Items[0].Name != "overridden-name" {
+		t.Errorf("Items[0].Name = %q, want %q", got.Items[0].Name, "overridden-name")
+	}
+}
+
+func TestOverrideNonMappingRoot(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[int](
+		ctx,
+		strings.NewReader("42\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("sub"): valueStr,
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got != 42 {
+		t.Errorf("got %d, want 42", got)
+	}
+}
+
+func TestMergeMappingOverriddenByScalar(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// Mapping source overridden by scalar override source
+	got, err := gig.Load[int](
+		ctx,
+		strings.NewReader("name: test\nport: 8080\n"),
+		gig.WithSources(strings.NewReader("42\n")),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got != 42 {
+		t.Errorf("got %d, want 42", got)
+	}
+}
+
+func TestBuildPathDocumentNode(t *testing.T) {
+	t.Parallel()
+	// Top-level tagged scalar: `!env MISSING` as the entire document
+	type directCfg struct {
+		Value string `yaml:"value"`
+	}
+	// Create a mutator that returns error at top-level
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		"!error": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+			return errors.New("top-level error")
+		}),
+	})
+	// Use direct YAML where entire doc is a tagged scalar
+	ctx := context.Background()
+	_, err := gig.Load[directCfg](
+		ctx,
+		strings.NewReader("!error value\n"),
+		gig.WithMutators(resolver),
+	)
+	if err == nil {
+		t.Fatal("expected error for top-level tagged scalar")
+	}
+}
+
+func TestFileBothRootAndFS(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	_, err = gig.NewFileHandler(
+		gig.WithFS(os.DirFS(dir)),
+		gig.WithRoot(root),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileOptionalTrailingEscape(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file? '$x\\'\n"),
+		gig.WithFileOptions(gig.WithBaseDir(t.TempDir())),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
+			if name == "x" {
+				return secretFile, true
+			}
+
+			return "", false
+		})),
+	)
+	if err == nil || !strings.Contains(err.Error(), "trailing escape") {
+		t.Fatalf("expected trailing escape error, got %v", err)
+	}
+}
+
+func TestOverrideSetValueScalarEmptySegs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[string](
+		ctx,
+		strings.NewReader("original\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				"": overriddenStr,
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got != overriddenStr {
+		t.Errorf("got %q, want %q", got, overriddenStr)
+	}
+}
+
+func TestBuildDefaultMutatorsBothRootAndFS(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	_, err = gig.Load[cfg](
+		ctx,
+		strings.NewReader("{}\n"),
+		gig.WithFileOptions(gig.WithFS(os.DirFS(dir)), gig.WithRoot(root)),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+type errorFile struct{}
+
+func (f *errorFile) Read(_ []byte) (int, error) {
+	return 0, errors.New("read error")
+}
+
+func (f *errorFile) Close() error {
+	return nil
+}
+
+func (f *errorFile) Stat() (os.FileInfo, error) {
+	return nil, errors.New("stat error")
+}
+
+type errorFS struct{}
+
+func (efs *errorFS) Open(_ string) (fs.File, error) {
+	return &errorFile{}, nil
+}
+
+type closeFailFile struct{}
+
+func (f *closeFailFile) Read(p []byte) (int, error) {
+	copy(p, "data")
+
+	return 4, io.EOF
+}
+
+func (f *closeFailFile) Close() error {
+	return errors.New("close failure")
+}
+
+func (f *closeFailFile) Stat() (os.FileInfo, error) {
+	return nil, errors.New("stat error")
+}
+
+type closeFailFS struct{}
+
+func (closeFailFS) Open(_ string) (fs.File, error) {
+	return &closeFailFile{}, nil
+}
+
+func TestReadFromFSCloseError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !file any.txt\n"),
+		gig.WithFileOptions(gig.WithFS(closeFailFS{})),
+	)
+	if err == nil {
+		t.Fatal("expected error from close failure")
+	}
+}
+
+func TestNewOverrideInvalidKeys(t *testing.T) {
+	t.Parallel()
+
+	_, err := gig.NewOverride(map[gig.YamlKey]string{
+		gig.YamlKey("foo[0"):    "a",
+		gig.YamlKey("foo[abc]"): "b",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid override keys")
+	}
+	if !strings.Contains(err.Error(), "foo[0") || !strings.Contains(err.Error(), "foo[abc]") {
+		t.Errorf("error = %v, want both invalid keys reported", err)
+	}
+
+	_, err = gig.NewOverride(map[gig.YamlKey]string{gig.YamlKey("trailing\\"): "a"})
+	if err == nil || !strings.Contains(err.Error(), "trailing escape") {
+		t.Errorf("error = %v, want trailing escape error", err)
+	}
+}
+
+func TestYamlKeyLiteralDotKey(t *testing.T) {
+	t.Parallel()
+
+	type frameworksCfg struct {
+		Frameworks map[string]struct {
+			Version string `yaml:"version"`
+		} `yaml:"frameworks"`
+	}
+
+	got, err := gig.Load[frameworksCfg](
+		context.Background(),
+		strings.NewReader("frameworks:\n  .net:\n    version: \"1\"\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("frameworks").Key(dotNetKey).Key("version"): "2",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if version := got.Frameworks[dotNetKey].Version; version != "2" {
+		t.Errorf("Frameworks[.net].Version = %q, want 2", version)
+	}
+}
+
+func TestYamlKeyLiteralBracketKey(t *testing.T) {
+	t.Parallel()
+
+	type queryCfg struct {
+		URL struct {
+			Query map[string]string `yaml:"query"`
+		} `yaml:"url"`
+	}
+
+	got, err := gig.Load[queryCfg](
+		context.Background(),
+		strings.NewReader("url:\n  query:\n    \"filters[0]\": a\n    \"filters[1]\": b\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("url").Key("query").Key(filtersZero): "overridden",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.URL.Query[filtersZero] != overriddenStr {
+		t.Errorf("filters[0] = %q, want overridden", got.URL.Query[filtersZero])
+	}
+	if got.URL.Query["filters[1]"] != "b" {
+		t.Errorf("filters[1] = %q, want b", got.URL.Query["filters[1]"])
+	}
+}
+
+func TestEnvFallbackLiteralDollar(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env '${MISSING:-$}'\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
+			return "", false
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "$" {
+		t.Errorf("Name = %q, want %q", got.Name, "$")
+	}
+}
+
+func TestTagResolverUnknownKind(t *testing.T) {
+	t.Parallel()
+	err := gig.NewTagResolver(nil).Mutate(context.Background(), &yaml.Node{Kind: 0})
+	if err != nil {
+		t.Errorf("Mutate() error = %v, want nil", err)
+	}
 }

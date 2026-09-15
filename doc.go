@@ -1,5 +1,5 @@
 // Package gig loads typed configuration from YAML with environment
-// variables and file references.
+// variables, file references, and a flat pipeline of Mutators.
 //
 // # Quick Start
 //
@@ -8,7 +8,7 @@
 //	    Password string `yaml:"password"`
 //	}
 //
-//	cfg, err := gig.Load[Config](strings.NewReader(`
+//	cfg, err := gig.Load[Config](ctx, strings.NewReader(`
 //	login:    !env '${LOGIN:-admin}'
 //	password: !file /run/secrets/db_password
 //	`))
@@ -50,15 +50,11 @@
 //
 // # Custom Resolvers
 //
-//	gig.WithResolver("!vault", func(ctx context.Context, node *yaml.Node) error {
-//	    secret, err := vaultClient.GetSecret(ctx, node.Value)
-//	    node.Tag = ""
-//	    node.Value = secret
-//	    return err
-//	})
-//
-// To support optional resolution (the "?" suffix, as in !vault?), register
-// the tag with the "?" included: WithResolver("!vault?", resolver).
+//	cfg, err := gig.Load[Config](ctx, yamlFile, gig.WithMutators(
+//	    gig.NewTagResolver(map[string]gig.Mutator{
+//	        "!vault": vaultHandler,
+//	    }),
+//	))
 //
 // # Validation
 //
@@ -67,7 +63,7 @@
 //
 // # Layered Overrides
 //
-//	gig.Load[Config](base, gig.WithSources(override))
+//	gig.Load[Config](ctx, base, gig.WithSources(override))
 //
 // Optional tags (!env?, !file?) leave a field unchanged when the value is
 // missing, preserving a value from an earlier source.
@@ -77,18 +73,16 @@
 //  1. For each source in order:
 //     - read the source
 //     - unmarshal YAML
-//     - resolve optional tags (unset values remove that field)
+//     - run all Mutators in order
 //     - merge into the accumulator (maps combine, scalars and sequences replace)
-//  2. Resolve required tags (!env, !file, custom) on the merged tree.
-//  3. Decode into T.
-//  4. Validate if implemented.
+//  2. Decode into T.
+//  3. Validate if implemented.
 //
 // # Defaults
 //
-//   - Base directory: the absolute current working directory (system filesystem)
-//     or "." (configured filesystem).
-//   - Loading context: context.Background().
-//   - Environment lookup: os.Getenv (overridable with WithEnvLookup).
+//   - Mutator chain: a TagResolver handling !env, !env?, !file, !file?.
+//   - File base directory: the absolute current working directory.
+//   - Env lookup: os.LookupEnv.
 //   - Validation is enabled by default.  Use WithValidation(false) to disable.
 //
 // # Errors
@@ -99,7 +93,4 @@
 //	if resolveErr, ok := errors.As[ResolveError](err); ok {
 //	    fmt.Println("path:", resolveErr.Path)
 //	}
-//
-// WithEnvLookup and WithEnvExpander replace the default environment lookup
-// and expression expander used by !env and !env?.
 package gig

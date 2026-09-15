@@ -17,7 +17,7 @@ tasks:
   test:
     desc: go test (race + coverage)
     cmds:
-      - CGO_ENABLED=1 go test -race -count=1 -coverprofile=bin/coverage.out -covermode=atomic .
+      - CGO_ENABLED=1 go test -race -count=1 -coverprofile=bin/coverage.out -covermode=atomic ./...
 
   covercheck:
     desc: coverage >= REQUIRED_CODE_COVERAGE

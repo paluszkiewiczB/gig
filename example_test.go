@@ -15,7 +15,7 @@ func ExampleLoad() {
 		Port int    `yaml:"port"`
 	}
 
-	cfg, err := gig.Load[Config](strings.NewReader("host: localhost\nport: 8080\n"))
+	cfg, err := gig.Load[Config](context.Background(), strings.NewReader("host: localhost\nport: 8080\n"))
 	if err != nil {
 		panic(err)
 	}
@@ -29,6 +29,7 @@ func ExampleLoad_file() {
 	}
 
 	cfg, err := gig.Load[Config](
+		context.Background(),
 		strings.NewReader("password: !file testdata/password.txt\n"),
 	)
 	if err != nil {
@@ -47,7 +48,7 @@ func ExampleWithSources() {
 	base := strings.NewReader("login: admin\nport: 8080\n")
 	override := strings.NewReader("port: 9090\n")
 
-	cfg, err := gig.Load[Config](base, gig.WithSources(override))
+	cfg, err := gig.Load[Config](context.Background(), base, gig.WithSources(override))
 	if err != nil {
 		panic(err)
 	}
@@ -68,8 +69,9 @@ func ExampleWithEnvLookup() {
 	}
 
 	cfg, err := gig.Load[Config](
+		context.Background(),
 		strings.NewReader("name: !env SERVICE_NAME\n"),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -91,8 +93,9 @@ func Example_expressions() {
 	}
 
 	cfg, err := gig.Load[Config](
+		context.Background(),
 		strings.NewReader(`value: !env '${GREETING:-hello}'`),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -101,8 +104,9 @@ func Example_expressions() {
 
 	env["GREETING"] = "hi"
 	cfg, err = gig.Load[Config](
+		context.Background(),
 		strings.NewReader(`value: !env '${GREETING:-hello}'`),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -110,8 +114,9 @@ func Example_expressions() {
 	fmt.Println("value:", cfg.Value)
 
 	cfg, err = gig.Load[Config](
+		context.Background(),
 		strings.NewReader(`value: !env '${MODE:+production-mode}'`),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -120,8 +125,9 @@ func Example_expressions() {
 
 	delete(env, "GREETING")
 	cfg, err = gig.Load[Config](
+		context.Background(),
 		strings.NewReader(`value: !env '${GREETING:-${MODE:-fallback}}'`),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -148,8 +154,9 @@ func Example_expressions_escape() {
 	}
 
 	cfg, err := gig.Load[Config](
+		context.Background(),
 		strings.NewReader(`msg: !env '${GREETING:-hello \$there}'`),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -158,8 +165,9 @@ func Example_expressions_escape() {
 
 	env["GREETING"] = "hi"
 	cfg, err = gig.Load[Config](
+		context.Background(),
 		strings.NewReader(`msg: !env '${GREETING:-hello \$there}'`),
-		gig.WithEnvLookup(lookup),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
 	)
 	if err != nil {
 		panic(err)
@@ -171,19 +179,22 @@ func Example_expressions_escape() {
 	// hi
 }
 
-func ExampleWithResolver() {
+func ExampleWithMutators() {
 	type Config struct {
 		Name string `yaml:"name"`
 	}
 
 	cfg, err := gig.Load[Config](
+		context.Background(),
 		strings.NewReader("name: !upper hello\n"),
-		gig.WithResolver("!upper", func(_ context.Context, node *yaml.Node) error {
-			node.Tag = ""
-			node.Value = strings.ToUpper(node.Value)
+		gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
+			"!upper": gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
+				node.Tag = ""
+				node.Value = strings.ToUpper(node.Value)
 
-			return nil
-		}),
+				return nil
+			}),
+		})),
 	)
 	if err != nil {
 		panic(err)
