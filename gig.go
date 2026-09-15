@@ -31,7 +31,7 @@ type LoadOption func(*loader) error
 func Load[T any](ctx context.Context, src io.Reader, opts ...LoadOption) (T, error) {
 	var zero T
 
-	state := &loader{ //nolint:exhaustruct // zero values are intentional; only validate starts true.
+	state := &loader{ //nolint:exhaustruct_v5 // zero values are intentional; only validate starts true.
 		validate: true,
 	}
 	for _, opt := range opts {

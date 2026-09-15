@@ -24,7 +24,8 @@ type fileConfig struct {
 	envLookup EnvLookup
 }
 
-// WithBaseDir sets the directory used to resolve relative !file paths.
+// WithBaseDir sets the directory used to resolve relative !file paths when
+// using the default system filesystem. It is ignored by WithFS and WithRoot.
 func WithBaseDir(dir string) FileOption {
 	return func(cfg *fileConfig) error {
 		cfg.baseDir = dir
@@ -33,13 +34,13 @@ func WithBaseDir(dir string) FileOption {
 	}
 }
 
-// WithFS sets the filesystem used to resolve !file paths. When omitted,
-// Load uses the unrestricted system filesystem rooted at /.
+// WithFS sets the filesystem used to resolve !file paths. When omitted, Load
+// reads through the system filesystem.
 //
-// Relative paths are resolved from WithBaseDir, which defaults to "."
-// when a custom filesystem is configured.
+// Relative paths are resolved from the filesystem root; WithBaseDir applies
+// only to the system filesystem.
 //
-// If both WithFS and WithRoot are provided, the last one wins.
+// If both WithFS and WithRoot are provided, WithRoot wins.
 func WithFS(fsys fs.FS) FileOption {
 	return func(cfg *fileConfig) error {
 		if fsys == nil {

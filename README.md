@@ -158,7 +158,7 @@ Resolution failures return `ResolveError` with the configuration path
 (e.g., `$.database.host`). Extract it with `errors.As`:
 
 ```go
-resolveErr, ok := errors.As[gig.ResolveError](err)
+resolveErr, ok := errors.AsType[*gig.ResolveError](err)
 ```
 
 ## Options

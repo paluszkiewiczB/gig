@@ -11,6 +11,7 @@ linters:
     - depguard
     - dupl
     - err113
+    - exhaustruct
     - funlen
     - gocyclo
     - inamedparam
@@ -34,8 +35,8 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: true
-    exhaustruct:
-      exclude:
+    exhaustruct_v5:
+      ignore-patterns:
         - gopkg.in/yaml.v3.Node
 
 formatters:

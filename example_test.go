@@ -2,6 +2,7 @@ package gig_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -201,4 +202,82 @@ func ExampleWithMutators() {
 	}
 	fmt.Println(cfg.Name)
 	// Output: HELLO
+}
+
+func Example() {
+	type Config struct {
+		Login    string `yaml:"login"`
+		Password string `yaml:"password"`
+	}
+
+	env := map[string]string{"LOGIN": "admin"}
+	lookup := func(name string) (string, bool) {
+		value, ok := env[name]
+
+		return value, ok
+	}
+
+	cfg, err := gig.Load[Config](
+		context.Background(),
+		strings.NewReader("login: !env '${LOGIN:-guest}'\npassword: !file testdata/password.txt\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(lookup)),
+	)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s %s\n", cfg.Login, cfg.Password)
+	// Output: admin s3cret
+}
+
+func ExampleResolveError() {
+	type Config struct {
+		Host string `yaml:"host"`
+	}
+
+	_, err := gig.Load[Config](
+		context.Background(),
+		strings.NewReader("host: !env MISSING_HOST\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(string) (string, bool) {
+			return "", false
+		})),
+	)
+	resolveErr, ok := errors.AsType[*gig.ResolveError](err)
+	if !ok {
+		panic("expected a ResolveError")
+	}
+	fmt.Println(resolveErr.Path)
+	// Output: $.host
+}
+
+func ExampleNewOverride() {
+	type Config struct {
+		Host string `yaml:"host"`
+		Port int    `yaml:"port"`
+	}
+
+	overrides, err := gig.NewOverride(map[gig.YamlKey]string{
+		gig.YamlKey("").Key("host"): "127.0.0.1",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	cfg, err := gig.Load[Config](
+		context.Background(),
+		strings.NewReader("host: localhost\nport: 8080\n"),
+		gig.WithMutators(overrides),
+	)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s %d\n", cfg.Host, cfg.Port)
+	// Output: 127.0.0.1 8080
+}
+
+func ExampleYamlKey() {
+	fmt.Println(gig.YamlKey("").Key("servers").Index(0))
+	fmt.Println(gig.YamlKey("").Key("url").Key("query").Key("filters[0]"))
+	// Output:
+	// servers[0]
+	// url.query.filters\[0]
 }

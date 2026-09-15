@@ -1,24 +1,14 @@
 // Package gig loads typed configuration from YAML with environment
 // variables, file references, and a flat pipeline of Mutators.
 //
-// # Quick Start
-//
-//	type Config struct {
-//	    Login    string `yaml:"login"`
-//	    Password string `yaml:"password"`
-//	}
-//
-//	cfg, err := gig.Load[Config](ctx, strings.NewReader(`
-//	login:    !env '${LOGIN:-admin}'
-//	password: !file /run/secrets/db_password
-//	`))
-//
 // # Tags
 //
 //	!env  NAME       Required environment variable
 //	!env? NAME       Optional environment variable
 //	!file path       Required file contents (whitespace trimmed)
 //	!file? path      Optional file contents (whitespace trimmed)
+//
+// A tag with no registered handler is a resolution error.
 //
 // # Environment Expressions
 //
@@ -33,40 +23,42 @@
 //	${VAR:?message}   error with message when VAR is unset or empty
 //	${VAR?message}    error with message when VAR is unset only
 //
-// Nested expressions are supported:
+// Expressions may be nested. A backslash escapes the next character in a
+// fallback word, producing a literal character. Assignment operators (= and :=)
+// are rejected. See Example_expressions and Example_expressions_escape.
 //
-//	message: !env '${LOG_LEVEL:-${ENV:-info}}'
+// # File Resolution
 //
-// A backslash escapes the next character in fallback words, producing a
-// literal character.  When GREETING is unset, \$-there- resolves to $there:
-//
-//	msg: !env '${GREETING:-hello \$there}'   ->   "hello $there"
-//
-// Assignment operators (= and :=) are rejected.
-//
-// File tags use the unrestricted system filesystem (os.DirFS("/")) by default.
-// Use WithFS or WithRoot to restrict access (if both are provided, the last one wins).  Relative paths are
-// resolved against the base directory (WithBaseDir).
+// !file reads through the system filesystem. Relative paths are resolved
+// against the base directory, which defaults to the current working directory.
+// Use WithFS or WithRoot to restrict access; if both are provided, WithRoot
+// wins. See ExampleLoad_file.
 //
 // # Custom Resolvers
 //
-//	cfg, err := gig.Load[Config](ctx, yamlFile, gig.WithMutators(
-//	    gig.NewTagResolver(map[string]gig.Mutator{
-//	        "!vault": vaultHandler,
-//	    }),
-//	))
+// Register a Mutator per tag with NewTagResolver. See ExampleWithMutators for a
+// resolver built on MutatorFunc.
 //
 // # Validation
 //
-// Implement Validator or ValidatorContext on your config type.  Load
-// calls Validate() after unmarshaling.  WithValidation(false) to disable.
+// Implement Validator or ValidatorContext on your config type. Load calls it
+// after unmarshaling. Use WithValidation(false) to disable.
 //
 // # Layered Overrides
 //
-//	gig.Load[Config](ctx, base, gig.WithSources(override))
+// Pass additional sources with WithSources. Mapping values merge recursively;
+// scalars and sequences replace earlier values. Optional tags (!env?, !file?)
+// leave a field unchanged when the value is missing, preserving a value from an
+// earlier source. See ExampleWithSources.
 //
-// Optional tags (!env?, !file?) leave a field unchanged when the value is
-// missing, preserving a value from an earlier source.
+// # Environment Overrides
+//
+// NewOverride replaces specific paths with literal strings, and EnvOverrides
+// builds the path map from environment variables. With the prefix "CFG_", the
+// variable CFG_database__host targets database.host: the prefix is stripped, __
+// separates path segments, and _ separates keys. Keys can also be built
+// directly with YamlKey, where each Key argument is one literal segment. See
+// ExampleNewOverride and ExampleYamlKey.
 //
 // # Processing Order
 //
@@ -83,14 +75,10 @@
 //   - Mutator chain: a TagResolver handling !env, !env?, !file, !file?.
 //   - File base directory: the absolute current working directory.
 //   - Env lookup: os.LookupEnv.
-//   - Validation is enabled by default.  Use WithValidation(false) to disable.
+//   - Validation is enabled by default. Use WithValidation(false) to disable.
 //
 // # Errors
 //
-// Resolution failures return ResolveError with paths like $.login.
-// Use errors.As to extract the path from a failed load:
-//
-//	if resolveErr, ok := errors.As[ResolveError](err); ok {
-//	    fmt.Println("path:", resolveErr.Path)
-//	}
+// Resolution failures return ResolveError with paths like $.login. Extract the
+// path with errors.AsType[*ResolveError]. See ExampleResolveError.
 package gig
