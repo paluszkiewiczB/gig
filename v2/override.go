@@ -2,6 +2,8 @@ package gig
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -9,93 +11,122 @@ import (
 )
 
 // NewOverride creates a Mutator that overrides specific YAML paths with
-// literal string values before the configured resolvers run.
-func NewOverride(overrides map[YamlKey]string) Mutator {
-	return &overrideMutator{overrides: overrides}
+// literal string values before the configured resolvers run. It returns an
+// error if any of the given keys is not a valid YAML path.
+func NewOverride(overrides map[YamlKey]string) (Mutator, error) {
+	entries := make([]overrideEntry, 0, len(overrides))
+	errs := make([]error, 0)
+	for key, value := range overrides {
+		segments, err := parseSegments(string(key))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("gig: invalid override key %q: %w", key, err))
+
+			continue
+		}
+		entries = append(entries, overrideEntry{segments: segments, value: value})
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+
+	return &overrideMutator{entries: entries}, nil
+}
+
+type overrideEntry struct {
+	segments []segment
+	value    string
 }
 
 type overrideMutator struct {
-	overrides map[YamlKey]string
+	entries []overrideEntry
 }
 
-func (m *overrideMutator) Mutate(ctx context.Context, node *yaml.Node) error {
-	return m.apply(ctx, node)
+func (m *overrideMutator) Mutate(_ context.Context, node *yaml.Node) error {
+	return m.apply(node)
 }
 
-func (m *overrideMutator) apply(ctx context.Context, node *yaml.Node) error {
+func (m *overrideMutator) apply(node *yaml.Node) error {
 	target := node
 	if target.Kind == yaml.DocumentNode && len(target.Content) > 0 {
 		target = target.Content[0]
 	}
-	for key, value := range m.overrides {
-		m.setValue(target, key.Segments(), value)
+	for _, entry := range m.entries {
+		m.setValue(target, entry.segments, entry.value)
 	}
+
 	return nil
 }
 
-func (m *overrideMutator) setValue(node *yaml.Node, segs []segment, value string) {
-	if len(segs) == 0 {
+func (m *overrideMutator) setValue(node *yaml.Node, segments []segment, value string) {
+	if len(segments) == 0 {
 		if node.Kind == yaml.ScalarNode {
 			node.Value = value
 			node.Tag = ""
 		}
+
 		return
 	}
 
 	if node.Kind == yaml.MappingNode {
-		m.setMappingValue(node, segs, value)
+		m.setMappingValue(node, segments, value)
+
 		return
 	}
 
-	if node.Kind == yaml.SequenceNode && segs[0].isIndex {
-		m.setSequenceValue(node, segs, value)
+	if node.Kind == yaml.SequenceNode && segments[0].isIndex {
+		m.setSequenceValue(node, segments, value)
 	}
 }
 
-func (m *overrideMutator) setMappingValue(node *yaml.Node, segs []segment, value string) {
-	for i := 0; i < len(node.Content); i += 2 {
-		keyNode := node.Content[i]
-		if keyNode.Value == segs[0].key {
-			if len(segs) == 1 {
-				node.Content[i+1].Kind = yaml.ScalarNode
-				node.Content[i+1].Tag = ""
-				node.Content[i+1].Value = value
-				node.Content[i+1].Content = nil
-				return
-			}
-			m.setValue(node.Content[i+1], segs[1:], value)
+func (m *overrideMutator) setMappingValue(node *yaml.Node, segments []segment, value string) {
+	for index := 0; index < len(node.Content); index += 2 {
+		keyNode := node.Content[index]
+		if keyNode.Value != segments[0].key {
+			continue
+		}
+		if len(segments) == 1 {
+			node.Content[index+1].Kind = yaml.ScalarNode
+			node.Content[index+1].Tag = ""
+			node.Content[index+1].Value = value
+			node.Content[index+1].Content = nil
+
 			return
 		}
+		m.setValue(node.Content[index+1], segments[1:], value)
+
+		return
 	}
-	m.createPath(node, segs, value)
+	m.createPath(node, segments, value)
 }
 
-func (m *overrideMutator) setSequenceValue(node *yaml.Node, segs []segment, value string) {
-	idx := segs[0].index
-	if idx >= len(node.Content) {
+func (m *overrideMutator) setSequenceValue(node *yaml.Node, segments []segment, value string) {
+	index := segments[0].index
+	if index >= len(node.Content) {
 		return
 	}
-	if len(segs) == 1 {
-		node.Content[idx].Kind = yaml.ScalarNode
-		node.Content[idx].Tag = ""
-		node.Content[idx].Value = value
-		node.Content[idx].Content = nil
+	if len(segments) == 1 {
+		node.Content[index].Kind = yaml.ScalarNode
+		node.Content[index].Tag = ""
+		node.Content[index].Value = value
+		node.Content[index].Content = nil
+
 		return
 	}
-	m.setValue(node.Content[idx], segs[1:], value)
+	m.setValue(node.Content[index], segments[1:], value)
 }
 
-func (m *overrideMutator) createPath(node *yaml.Node, segs []segment, value string) {
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: segs[0].key}
-	if len(segs) == 1 {
-		valNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
-		node.Content = append(node.Content, keyNode, valNode)
+func (m *overrideMutator) createPath(node *yaml.Node, segments []segment, value string) {
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: segments[0].key}
+	if len(segments) == 1 {
+		valueNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+		node.Content = append(node.Content, keyNode, valueNode)
+
 		return
 	}
 
-	valNode := &yaml.Node{Kind: yaml.MappingNode}
-	node.Content = append(node.Content, keyNode, valNode)
-	m.setValue(valNode, segs[1:], value)
+	valueNode := &yaml.Node{Kind: yaml.MappingNode}
+	node.Content = append(node.Content, keyNode, valueNode)
+	m.setValue(valueNode, segments[1:], value)
 }
 
 // EnvOverrides reads environment variables with the given prefix and returns
@@ -117,31 +148,33 @@ func EnvOverrides(prefix string) map[YamlKey]string {
 		key := envKeyToYamlKey(trimmed)
 		result[key] = val
 	}
+
 	return result
 }
 
-func envKeyToYamlKey(s string) YamlKey {
+func envKeyToYamlKey(raw string) YamlKey {
 	var result YamlKey
 	current := ""
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
+	for index := 0; index < len(raw); index++ {
+		char := raw[index]
 		switch {
-		case ch == '_' && i+1 < len(s) && s[i+1] == '_':
+		case char == '_' && index+1 < len(raw) && raw[index+1] == '_':
 			result = result.Key(current)
 			result = result.Key("")
 			current = ""
-			i++
-		case ch == '_':
+			index++
+		case char == '_':
 			if current != "" {
 				result = result.Key(current)
 			}
 			current = ""
 		default:
-			current += string(ch)
+			current += string(char)
 		}
 	}
 	if current != "" {
 		result = result.Key(current)
 	}
+
 	return result
 }

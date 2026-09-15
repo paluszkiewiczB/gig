@@ -30,33 +30,55 @@ type LoadOption func(*loader) error
 // result into T, and optionally validates it.
 func Load[T any](ctx context.Context, src io.Reader, opts ...LoadOption) (T, error) {
 	var zero T
-	l := &loader{
+
+	state := &loader{ //nolint:exhaustruct // zero values are intentional; only validate starts true.
 		validate: true,
 	}
 	for _, opt := range opts {
-		if err := opt(l); err != nil {
+		if err := opt(state); err != nil {
 			return zero, err
 		}
 	}
 
 	// Build the reader list: primary source + any WithSources
-	readers := append([]io.Reader{src}, l.sources...)
+	readers := append([]io.Reader{src}, state.sources...)
 
 	// Build mutator chain
-	if !l.customMutators {
+	if !state.customMutators {
 		var err error
-		l.mutators, err = buildDefaultMutators(l.fileOptions, l.envOptions)
+		state.mutators, err = buildDefaultMutators(state.fileOptions, state.envOptions)
 		if err != nil {
 			return zero, err
 		}
 	}
 
-	// Process sources
+	merged, err := mergeSources(ctx, readers, state.mutators)
+	if err != nil {
+		return zero, err
+	}
+	if merged == nil {
+		return zero, nil
+	}
+
+	if err := merged.Decode(&zero); err != nil {
+		return zero, fmt.Errorf("unmarshal: %w", err)
+	}
+
+	if state.validate {
+		if err := validateValue(ctx, &zero); err != nil {
+			return zero, err
+		}
+	}
+
+	return zero, nil
+}
+
+func mergeSources(ctx context.Context, readers []io.Reader, mutators []Mutator) (*yaml.Node, error) {
 	var merged *yaml.Node
-	for _, r := range readers {
-		data, err := io.ReadAll(r)
+	for _, reader := range readers {
+		data, err := io.ReadAll(reader)
 		if err != nil {
-			return zero, fmt.Errorf("read source: %w", err)
+			return nil, fmt.Errorf("read source: %w", err)
 		}
 		if len(strings.TrimSpace(string(data))) == 0 {
 			continue
@@ -64,13 +86,12 @@ func Load[T any](ctx context.Context, src io.Reader, opts ...LoadOption) (T, err
 
 		var doc yaml.Node
 		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return zero, fmt.Errorf("yaml: %w", err)
+			return nil, fmt.Errorf("yaml: %w", err)
 		}
 
-		// Apply mutators
-		for _, m := range l.mutators {
-			if err := m.Mutate(ctx, &doc); err != nil {
-				return zero, fmt.Errorf("mutate: %w", err)
+		for _, mutator := range mutators {
+			if err := mutator.Mutate(ctx, &doc); err != nil {
+				return nil, fmt.Errorf("mutate: %w", err)
 			}
 		}
 
@@ -81,38 +102,22 @@ func Load[T any](ctx context.Context, src io.Reader, opts ...LoadOption) (T, err
 		}
 	}
 
-	if merged == nil {
-		return zero, nil
-	}
+	return merged, nil
+}
 
-	// Decode
-	if err := merged.Decode(&zero); err != nil {
-		return zero, fmt.Errorf("unmarshal: %w", err)
-	}
-
-	// Validate
-	if l.validate {
-		if v, ok := any(zero).(Validator); ok {
-			if err := v.Validate(); err != nil {
-				return zero, fmt.Errorf("validate: %w", err)
-			}
-		} else if v, ok := any(&zero).(Validator); ok {
-			if err := v.Validate(); err != nil {
-				return zero, fmt.Errorf("validate: %w", err)
-			}
+func validateValue[T any](ctx context.Context, value *T) error {
+	if validator, ok := any(value).(Validator); ok {
+		if err := validator.Validate(); err != nil {
+			return fmt.Errorf("validate: %w", err)
 		}
-		if v, ok := any(zero).(ValidatorContext); ok {
-			if err := v.ValidateContext(ctx); err != nil {
-				return zero, fmt.Errorf("validate: %w", err)
-			}
-		} else if v, ok := any(&zero).(ValidatorContext); ok {
-			if err := v.ValidateContext(ctx); err != nil {
-				return zero, fmt.Errorf("validate: %w", err)
-			}
+	}
+	if validator, ok := any(value).(ValidatorContext); ok {
+		if err := validator.ValidateContext(ctx); err != nil {
+			return fmt.Errorf("validate: %w", err)
 		}
 	}
 
-	return zero, nil
+	return nil
 }
 
 func isNil[T any](v T) bool { return any(v) == nil || reflect.ValueOf(v).IsNil() }
@@ -125,6 +130,7 @@ func WithMutators(m ...Mutator) LoadOption {
 		}
 		l.mutators = m
 		l.customMutators = true
+
 		return nil
 	}
 }
@@ -138,6 +144,7 @@ func WithSources(readers ...io.Reader) LoadOption {
 			return fmt.Errorf("gig: nil source reader at index %d", i)
 		}
 		l.sources = append(l.sources, readers...)
+
 		return nil
 	}
 }
@@ -147,6 +154,7 @@ func WithSources(readers ...io.Reader) LoadOption {
 func WithValidation(enabled bool) LoadOption {
 	return func(l *loader) error {
 		l.validate = enabled
+
 		return nil
 	}
 }
@@ -159,6 +167,7 @@ func WithFileOptions(opts ...FileOption) LoadOption {
 			return fmt.Errorf("gig: nil file option at index %d", i)
 		}
 		l.fileOptions = append(l.fileOptions, opts...)
+
 		return nil
 	}
 }
@@ -171,6 +180,7 @@ func WithEnvOptions(opts ...EnvOption) LoadOption {
 			return fmt.Errorf("gig: nil env option at index %d", i)
 		}
 		l.envOptions = append(l.envOptions, opts...)
+
 		return nil
 	}
 }
@@ -198,6 +208,7 @@ func (e ResolveError) Error() string {
 	if e.Err == nil {
 		return e.Path
 	}
+
 	return fmt.Sprintf("%s: %v", e.Path, e.Err)
 }
 

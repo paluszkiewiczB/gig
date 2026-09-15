@@ -15,6 +15,7 @@ func mergeNodes(dst, src *yaml.Node) *yaml.Node {
 	if src.Kind == yaml.DocumentNode && len(src.Content) > 0 {
 		srcNode = src.Content[0]
 	}
+
 	return mergeNode(dstNode, srcNode)
 }
 
@@ -22,6 +23,7 @@ func mergeNode(dst, src *yaml.Node) *yaml.Node {
 	if dst.Kind != yaml.MappingNode || src.Kind != yaml.MappingNode {
 		return src
 	}
+
 	return mergeMapping(dst, src)
 }
 
@@ -51,24 +53,25 @@ func mergeMapping(dst, src *yaml.Node) *yaml.Node {
 	return result
 }
 
-func cloneNode(n *yaml.Node) *yaml.Node {
-	c := &yaml.Node{
-		Kind:        n.Kind,
-		Tag:         n.Tag,
-		Value:       n.Value,
-		Style:       n.Style,
-		Anchor:      n.Anchor,
-		Alias:       n.Alias,
-		Line:        n.Line,
-		Column:      n.Column,
-		HeadComment: n.HeadComment,
-		LineComment: n.LineComment,
-		FootComment: n.FootComment,
+func cloneNode(node *yaml.Node) *yaml.Node {
+	clone := &yaml.Node{
+		Kind:        node.Kind,
+		Tag:         node.Tag,
+		Value:       node.Value,
+		Style:       node.Style,
+		Anchor:      node.Anchor,
+		Alias:       node.Alias,
+		Line:        node.Line,
+		Column:      node.Column,
+		HeadComment: node.HeadComment,
+		LineComment: node.LineComment,
+		FootComment: node.FootComment,
 	}
-	for _, child := range n.Content {
-		c.Content = append(c.Content, cloneNode(child))
+	for _, child := range node.Content {
+		clone.Content = append(clone.Content, cloneNode(child))
 	}
-	return c
+
+	return clone
 }
 
 func buildPath(parent *yaml.Node, index int) string {

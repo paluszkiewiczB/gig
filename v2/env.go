@@ -36,6 +36,7 @@ func WithEnvLookup(lookup EnvLookup) EnvOption {
 			return errors.New("gig: env lookup must not be nil")
 		}
 		cfg.lookup = lookup
+
 		return nil
 	}
 }
@@ -48,6 +49,7 @@ func WithEnvExpander(expander EnvExpander) EnvOption {
 			return errors.New("gig: env expander must not be nil")
 		}
 		cfg.expander = expander
+
 		return nil
 	}
 }
@@ -56,27 +58,29 @@ func WithEnvExpander(expander EnvExpander) EnvOption {
 // given options. When called without options, it uses os.LookupEnv.
 func NewEnvHandler(opts ...EnvOption) (Mutator, error) {
 	cfg := &envConfig{
-		lookup: os.LookupEnv,
+		lookup:   os.LookupEnv,
+		expander: nil,
 	}
 	for _, opt := range opts {
 		if err := opt(cfg); err != nil {
 			return nil, err
 		}
 	}
+
 	return &envHandler{cfg: cfg}, nil
 }
 
 // DefaultEnvHandler returns a Mutator that resolves !env and !env? using
 // os.LookupEnv without any custom configuration.
 func DefaultEnvHandler() Mutator {
-	return &envHandler{cfg: &envConfig{lookup: os.LookupEnv}}
+	return &envHandler{cfg: &envConfig{lookup: os.LookupEnv, expander: nil}}
 }
 
 type envHandler struct {
 	cfg *envConfig
 }
 
-func (h *envHandler) Mutate(ctx context.Context, node *yaml.Node) error {
+func (h *envHandler) Mutate(_ context.Context, node *yaml.Node) error {
 	value := node.Value
 	optional := strings.HasSuffix(node.Tag, "?")
 
@@ -93,6 +97,7 @@ func (h *envHandler) Mutate(ctx context.Context, node *yaml.Node) error {
 	}
 	node.Tag = ""
 	node.Value = result
+
 	return nil
 }
 
@@ -105,10 +110,12 @@ func (h *envHandler) mutateWithExpander(node *yaml.Node, value string, optional 
 		if optional {
 			return ErrOptionalUnset
 		}
+
 		return fmt.Errorf("!env produced no value for %q", value)
 	}
 	node.Tag = ""
 	node.Value = result
+
 	return nil
 }
 
@@ -124,8 +131,10 @@ func expandEnv(value string, optional bool, lookup EnvLookup) (string, bool, err
 			if optional {
 				return "", false, nil
 			}
+
 			return "", false, fmt.Errorf("%s: %w", value, errNotSet)
 		}
+
 		return resolved, true, nil
 	}
 
@@ -144,6 +153,7 @@ func expandEnv(value string, optional bool, lookup EnvLookup) (string, bool, err
 	if !result.present && optional {
 		return "", false, nil
 	}
+
 	return result.value, true, nil
 }
 
@@ -160,6 +170,7 @@ type envParser struct {
 
 func (p *envParser) parseExpression() (envResult, error) {
 	p.consume("${")
+
 	return p.parseExpansionBody()
 }
 
@@ -171,6 +182,7 @@ func (p *envParser) parseExpansionBody() (envResult, error) {
 
 	if p.consume("}") {
 		value, present := p.lookup(name)
+
 		return envResult{value: value, present: present}, nil
 	}
 
@@ -214,6 +226,7 @@ func (p *envParser) opDefault(value string, present bool, word string) (envResul
 	if present {
 		return envResult{value: value, present: true}, nil
 	}
+
 	return p.evaluateWord(word)
 }
 
@@ -221,6 +234,7 @@ func (p *envParser) opDefaultOrEmpty(value string, present bool, word string) (e
 	if present && value != "" {
 		return envResult{value: value, present: true}, nil
 	}
+
 	return p.evaluateWord(word)
 }
 
@@ -228,6 +242,7 @@ func (p *envParser) opAlternate(_ string, present bool, word string) (envResult,
 	if !present {
 		return envResult{value: "", present: true}, nil
 	}
+
 	return p.evaluateWord(word)
 }
 
@@ -235,6 +250,7 @@ func (p *envParser) opAlternateOrEmpty(value string, present bool, word string) 
 	if !present || value == "" {
 		return envResult{value: "", present: true}, nil
 	}
+
 	return p.evaluateWord(word)
 }
 
@@ -245,6 +261,7 @@ func (p *envParser) opRequired(name, value string, present bool, word string, em
 	if !empty && !present {
 		return p.requiredError(name, word, false)
 	}
+
 	return envResult{value: value, present: true}, nil
 }
 
@@ -257,6 +274,7 @@ func (p *envParser) parseName() (string, error) {
 	for p.pos < len(p.input) && isEnvNameChar(p.input[p.pos]) {
 		p.pos++
 	}
+
 	return p.input[start:p.pos], nil
 }
 
@@ -270,10 +288,12 @@ func (p *envParser) parseOperator() (string, error) {
 		}
 		operator := p.input[p.pos : p.pos+2]
 		p.pos += 2
+
 		return operator, nil
 	}
 	operator := p.input[p.pos : p.pos+1]
 	p.pos++
+
 	return operator, nil
 }
 
@@ -284,6 +304,7 @@ func (p *envParser) readWord() (string, error) {
 	for p.pos < len(p.input) {
 		if p.input[p.pos] == '}' && nested == 0 {
 			p.pos++
+
 			return word.String(), nil
 		}
 		if p.input[p.pos] == '\\' {
@@ -292,11 +313,13 @@ func (p *envParser) readWord() (string, error) {
 				return "", err
 			}
 			word.WriteString(text)
+
 			continue
 		}
 		if p.consume("${") {
 			nested++
 			word.WriteString("${")
+
 			continue
 		}
 		if p.input[p.pos] == '}' && nested > 0 {
@@ -320,6 +343,7 @@ func (p *envParser) readWordEscape(nested *int) (string, error) {
 	}
 	seq := p.input[p.pos : p.pos+2]
 	p.pos += 2
+
 	return seq, nil
 }
 
@@ -334,6 +358,7 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 				return envResult{}, err
 			}
 			value.WriteByte(b)
+
 			continue
 		}
 		if parser.consume("${") {
@@ -342,6 +367,7 @@ func (p *envParser) evaluateWord(word string) (envResult, error) {
 				return envResult{}, err
 			}
 			value.WriteString(result.value)
+
 			continue
 		}
 		if parser.handleSimpleName(&value) {
@@ -360,6 +386,7 @@ func (p *envParser) readEscape() (byte, error) {
 	}
 	b := p.input[p.pos+1]
 	p.pos += 2
+
 	return b, nil
 }
 
@@ -377,6 +404,7 @@ func (p *envParser) handleSimpleName(value *strings.Builder) bool {
 	}
 	resolved, _ := p.lookup(p.input[start:p.pos])
 	value.WriteString(resolved)
+
 	return true
 }
 
@@ -389,8 +417,10 @@ func (p *envParser) requiredError(name, word string, empty bool) (envResult, err
 		if empty {
 			return envResult{}, fmt.Errorf("%s: environment variable is empty", name)
 		}
+
 		return envResult{}, fmt.Errorf("%s: %w", name, errNotSet)
 	}
+
 	return envResult{}, fmt.Errorf("%s", message.value)
 }
 
@@ -399,6 +429,7 @@ func (p *envParser) consume(prefix string) bool {
 		return false
 	}
 	p.pos += len(prefix)
+
 	return true
 }
 

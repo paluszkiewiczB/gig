@@ -34,7 +34,10 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: true
-    
+    exhaustruct:
+      exclude:
+        - gopkg.in/yaml.v3.Node
+
 formatters:
   enable:
     - gofumpt

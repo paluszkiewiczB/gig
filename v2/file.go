@@ -28,6 +28,7 @@ type fileConfig struct {
 func WithBaseDir(dir string) FileOption {
 	return func(cfg *fileConfig) error {
 		cfg.baseDir = dir
+
 		return nil
 	}
 }
@@ -45,6 +46,7 @@ func WithFS(fsys fs.FS) FileOption {
 			return errors.New("gig: filesystem must not be nil")
 		}
 		cfg.fsys = fsys
+
 		return nil
 	}
 }
@@ -57,6 +59,7 @@ func WithRoot(root *os.Root) FileOption {
 			return errors.New("gig: root must not be nil")
 		}
 		cfg.root = root
+
 		return nil
 	}
 }
@@ -66,6 +69,9 @@ func WithRoot(root *os.Root) FileOption {
 // system filesystem using the current working directory as the base.
 func NewFileHandler(opts ...FileOption) (Mutator, error) {
 	cfg := &fileConfig{
+		baseDir:   "",
+		fsys:      nil,
+		root:      nil,
 		envLookup: os.LookupEnv,
 	}
 	for _, opt := range opts {
@@ -88,22 +94,19 @@ func NewFileHandler(opts ...FileOption) (Mutator, error) {
 // DefaultFileHandler returns a Mutator that resolves !file and !file? using
 // the system filesystem without any custom configuration.
 func DefaultFileHandler() Mutator {
-	return &fileHandler{cfg: &fileConfig{envLookup: os.LookupEnv}}
+	return &fileHandler{cfg: &fileConfig{baseDir: "", fsys: nil, root: nil, envLookup: os.LookupEnv}}
 }
 
 type fileHandler struct {
 	cfg *fileConfig
 }
 
-func (h *fileHandler) Mutate(ctx context.Context, node *yaml.Node) error {
+func (h *fileHandler) Mutate(_ context.Context, node *yaml.Node) error {
 	rawPath := node.Value
 	optional := strings.HasSuffix(node.Tag, "?")
 
 	expanded, err := expandPath(rawPath, h.cfg.envLookup)
 	if err != nil {
-		if optional && strings.Contains(err.Error(), "trailing escape") {
-			return err
-		}
 		return err
 	}
 	rawPath = expanded
@@ -122,24 +125,27 @@ func (h *fileHandler) Mutate(ctx context.Context, node *yaml.Node) error {
 		if optional {
 			return ErrOptionalUnset
 		}
+
 		return err
 	}
 
 	node.Tag = ""
 	node.Value = strings.TrimSpace(content)
+
 	return nil
 }
 
-func expandPath(p string, lookup EnvLookup) (string, error) {
+func expandPath(rawPath string, lookup EnvLookup) (string, error) {
 	parser := envParser{
-		input:  p,
+		input:  rawPath,
 		lookup: lookup,
 		pos:    0,
 	}
-	result, err := parser.evaluateWord(p)
+	result, err := parser.evaluateWord(rawPath)
 	if err != nil {
 		return "", err
 	}
+
 	return result.value, nil
 }
 
@@ -150,6 +156,7 @@ func readFromSystem(rawPath, baseDir string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("cannot read %q from %q", rawPath, rawPath)
 		}
+
 		return string(data), nil
 	}
 	if baseDir == "" {
@@ -165,10 +172,12 @@ func readFromSystem(rawPath, baseDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot read %q from %q", rawPath, rawPath)
 	}
+
 	return string(data), nil
 }
 
-func readFromFS(fsys fs.FS, rawPath string) (ret string, retErr error) {
+//nolint:nonamedreturns // named returns let the deferred close failure reach the caller.
+func readFromFS(fsys fs.FS, rawPath string) (content string, retErr error) {
 	if filepath.IsAbs(rawPath) {
 		return rawPath, fmt.Errorf("absolute file path %q not allowed with custom fs", rawPath)
 	}
@@ -176,19 +185,20 @@ func readFromFS(fsys fs.FS, rawPath string) (ret string, retErr error) {
 	if strings.HasPrefix(cleaned, "..") {
 		return rawPath, fmt.Errorf("invalid file path %q", rawPath)
 	}
-	f, err := fsys.Open(cleaned)
+	file, err := fsys.Open(cleaned)
 	if err != nil {
 		return rawPath, fmt.Errorf("open %q: %w", cleaned, err)
 	}
 	defer func() {
-		if closeErr := f.Close(); closeErr != nil && retErr == nil {
+		if closeErr := file.Close(); closeErr != nil && retErr == nil {
 			retErr = closeErr
 		}
 	}()
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return rawPath, fmt.Errorf("read %q: %w", cleaned, err)
 	}
+
 	return string(data), nil
 }
 
@@ -208,5 +218,6 @@ func readFromRoot(root *os.Root, rawPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot read %q from %q", rawPath, rawPath)
 	}
+
 	return string(data), nil
 }

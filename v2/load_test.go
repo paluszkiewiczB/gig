@@ -16,10 +16,20 @@ import (
 )
 
 const (
-	setValue     = "set-value"
-	otherValue   = "other-value"
-	defaultStr   = "default"
-	alternateStr = "alternate"
+	setValue      = "set-value"
+	otherValue    = "other-value"
+	defaultStr    = "default"
+	alternateStr  = "alternate"
+	rootStr       = "root"
+	secretFile    = "secret.txt"
+	envTag        = "!env"
+	fromEnv       = "from-env"
+	gigStr        = "gig"
+	strTag        = "!!str"
+	overriddenStr = "overridden"
+	valueStr      = "value"
+	dotNetKey     = ".net"
+	filtersZero   = "filters[0]"
 )
 
 var (
@@ -28,6 +38,17 @@ var (
 	errBoom           = errors.New("boom")
 	errBang           = errors.New("bang")
 )
+
+func mustOverride(t *testing.T, overrides map[gig.YamlKey]string) gig.Mutator {
+	t.Helper()
+
+	mutator, err := gig.NewOverride(overrides)
+	if err != nil {
+		t.Fatalf("NewOverride() error = %v", err)
+	}
+
+	return mutator
+}
 
 type fakeEnv map[string]string
 
@@ -324,7 +345,7 @@ func TestLoadEnv(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if got.Name != "root" {
+		if got.Name != rootStr {
 			t.Errorf("Name = %q, want root", got.Name)
 		}
 	})
@@ -492,7 +513,7 @@ func TestLoadFile(t *testing.T) {
 	t.Run("relative to base dir", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("  file-secret\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("  file-secret\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
@@ -531,7 +552,7 @@ func TestLoadFile(t *testing.T) {
 	t.Run("configured fs", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("rooted-secret\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("rooted-secret\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		root, err := os.OpenRoot(dir)
@@ -587,11 +608,11 @@ func TestLoadFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("missing: Load() error = %v", err)
 		}
-		if got.Name != "root" {
-			t.Errorf("Name = %q, want %q", got.Name, "root")
+		if got.Name != rootStr {
+			t.Errorf("Name = %q, want %q", got.Name, rootStr)
 		}
 
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("from-file\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("from-file\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err = gig.Load[cfg](
@@ -611,7 +632,7 @@ func TestLoadFile(t *testing.T) {
 	t.Run("evaluate trailing escape", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("data\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("data\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		_, err := gig.Load[cfg](
@@ -619,7 +640,7 @@ func TestLoadFile(t *testing.T) {
 			strings.NewReader("name: !file '$x\\'\n"),
 			gig.WithFileOptions(gig.WithBaseDir(dir)),
 			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
-				return "secret.txt", true
+				return secretFile, true
 			})),
 		)
 		if err == nil || !strings.Contains(err.Error(), "trailing escape") {
@@ -754,7 +775,7 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 			ctx,
 			strings.NewReader("name: !env GIG_TEST_OVERRIDE\n"),
 			gig.WithMutators(gig.NewTagResolver(map[string]gig.Mutator{
-				"!env": gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
+				envTag: gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
 					node.Tag = ""
 					node.Value = "overridden-" + node.Value
 
@@ -813,7 +834,7 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 		t.Parallel()
 		ctx := context.Background()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("fs-data\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("fs-data\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
@@ -856,19 +877,16 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 		}
 	})
 
-	t.Run("unknown optional tag", func(t *testing.T) {
+	t.Run("unknown tag", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-		got, err := gig.Load[cfg](
+		_, err := gig.Load[cfg](
 			ctx,
 			strings.NewReader("name: base\n"),
 			gig.WithSources(strings.NewReader("name: !nope? value\n")),
 		)
-		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-		if got.Name != "value" {
-			t.Errorf("Name = %q, want value", got.Name)
+		if err == nil || !strings.Contains(err.Error(), "unknown tag") {
+			t.Fatalf("Load() error = %v, want unknown tag error", err)
 		}
 	})
 
@@ -881,12 +899,12 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 		got, err := gig.Load[listCfg](
 			ctx,
 			strings.NewReader("list:\n  - !env GIG_SEQ_VAR\n  - literal\n"),
-			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) { return "from-env", true })),
+			gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) { return fromEnv, true })),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if len(got.List) != 2 || got.List[0] != "from-env" || got.List[1] != "literal" {
+		if len(got.List) != 2 || got.List[0] != fromEnv || got.List[1] != "literal" {
 			t.Errorf("List = %#v, want [from-env literal]", got.List)
 		}
 	})
@@ -1002,7 +1020,7 @@ func TestLoadResolver(t *testing.T) { //nolint:tparallel // child uses t.Chdir w
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if got.Name != "gig" || got.Alias != "gig" {
+		if got.Name != gigStr || got.Alias != gigStr {
 			t.Errorf("got %+v, want {Name:gig Alias:gig}", got)
 		}
 	})
@@ -1050,7 +1068,7 @@ func TestLoadEnvLookup(t *testing.T) {
 	t.Run("custom lookup in filepath", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("from-file"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secretFile), []byte("from-file"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		got, err := gig.Load[cfg](
@@ -1059,7 +1077,7 @@ func TestLoadEnvLookup(t *testing.T) {
 			gig.WithFileOptions(gig.WithBaseDir(dir)),
 			gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
 				if name == "CUSTOM_FILE" {
-					return "secret.txt", true
+					return secretFile, true
 				}
 
 				return "", false
@@ -1215,15 +1233,15 @@ func TestAliasNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got.Name != "gig" || got.Alias != "gig" {
+	if got.Name != gigStr || got.Alias != gigStr {
 		t.Errorf("got %+v, want {Name:gig Alias:gig}", got)
 	}
 }
 
 func TestTagResolverWalkAlias(t *testing.T) {
 	t.Parallel()
-	tr := gig.NewTagResolver(map[string]gig.Mutator{
-		"!env": gig.DefaultEnvHandler(),
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		envTag: gig.DefaultEnvHandler(),
 	})
 	ctx := context.Background()
 	// Alias node should not cause panic
@@ -1233,13 +1251,13 @@ func TestTagResolverWalkAlias(t *testing.T) {
 			{
 				Kind: yaml.MappingNode,
 				Content: []*yaml.Node{
-					{Kind: yaml.ScalarNode, Value: "name", Tag: "!!str"},
-					{Kind: yaml.ScalarNode, Value: "gig", Tag: "!!str"},
+					{Kind: yaml.ScalarNode, Value: "name", Tag: strTag},
+					{Kind: yaml.ScalarNode, Value: gigStr, Tag: strTag},
 				},
 			},
 		},
 	}
-	if err := tr.Mutate(ctx, doc); err != nil {
+	if err := resolver.Mutate(ctx, doc); err != nil {
 		t.Fatalf("Mutate() error = %v", err)
 	}
 }
@@ -1257,6 +1275,7 @@ func TestResolverSequenceTag(t *testing.T) {
 			if name == "GIG_EXISTING" {
 				return "present", true
 			}
+
 			return "", false
 		})),
 	)
@@ -1382,6 +1401,7 @@ func TestTaggedMappingKey(t *testing.T) {
 			if name == "NAME" {
 				return "key-value", true
 			}
+
 			return "", false
 		})),
 	)
@@ -1405,6 +1425,7 @@ func TestNestedMappingWalk(t *testing.T) {
 			if name == "INNER_VAL" {
 				return "nested-resolved", true
 			}
+
 			return "", false
 		})),
 	)
@@ -1487,8 +1508,8 @@ func TestReadFromRootReadAllError(t *testing.T) {
 func TestTaggedKeyErrorReturn(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	tr := gig.NewTagResolver(map[string]gig.Mutator{
-		"!err": gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		"!err": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
 			return errors.New("tagged key error")
 		}),
 	})
@@ -1499,7 +1520,7 @@ func TestTaggedKeyErrorReturn(t *testing.T) {
 	_, err := gig.Load[mapCfg](
 		ctx,
 		strings.NewReader("? !err MY_KEY\n: value\nval: keep\n"),
-		gig.WithMutators(tr),
+		gig.WithMutators(resolver),
 	)
 	if err == nil {
 		t.Fatal("expected error from tagged key")
@@ -1509,10 +1530,9 @@ func TestTaggedKeyErrorReturn(t *testing.T) {
 func TestTaggedKeyInMapping(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	tr := gig.NewTagResolver(map[string]gig.Mutator{
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
 		"!env?": gig.DefaultEnvHandler(),
 	})
-	_ = tr
 	// Test tagged key with unknown env - key should be removed
 	type mapCfg struct {
 		Name string `yaml:"name"`
@@ -1522,7 +1542,7 @@ func TestTaggedKeyInMapping(t *testing.T) {
 	got, err := gig.Load[mapCfg](
 		ctx,
 		strings.NewReader(yamlContent),
-		gig.WithMutators(tr),
+		gig.WithMutators(resolver),
 		gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
 			return "", false
 		})),
@@ -1547,7 +1567,7 @@ func TestReadFromFSReadAllError(t *testing.T) {
 func TestSequenceNonScalarWalkError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	tr := gig.NewTagResolver(map[string]gig.Mutator{
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
 		"!err": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
 			return errors.New("sequence nested error")
 		}),
@@ -1560,7 +1580,7 @@ func TestSequenceNonScalarWalkError(t *testing.T) {
 	_, err := gig.Load[seqCfg](
 		ctx,
 		strings.NewReader("items:\n  - val: !err test\n"),
-		gig.WithMutators(tr),
+		gig.WithMutators(resolver),
 	)
 	if err == nil {
 		t.Fatal("expected error from sequence nested walk")
@@ -1619,84 +1639,31 @@ func TestYamlKey(t *testing.T) {
 	t.Run("Index", func(t *testing.T) {
 		t.Parallel()
 		k := gig.YamlKey("").Key("foo").Index(0).Key("a.b")
-		if string(k) != "foo[0].a.b" {
-			t.Errorf("YamlKey = %q, want %q", k, "foo[0].a.b")
+		if string(k) != "foo[0].a\\.b" {
+			t.Errorf("YamlKey = %q, want %q", k, "foo[0].a\\.b")
 		}
-	})
-
-	t.Run("Segments", func(t *testing.T) {
-		t.Parallel()
-		segs := gig.YamlKey("foo.bar").Segments()
-		if len(segs) != 2 {
-			t.Errorf("Segments = %v, want 2 segments", segs)
-		}
-	})
-
-	t.Run("ParseYamlKey", func(t *testing.T) {
-		t.Parallel()
-		k, segs, err := gig.ParseYamlKey("foo.bar[0]")
-		if err != nil {
-			t.Fatalf("ParseYamlKey() error = %v", err)
-		}
-		if string(k) != "foo.bar[0]" {
-			t.Errorf("YamlKey = %q, want %q", k, "foo.bar[0]")
-		}
-		if len(segs) != 3 {
-			t.Errorf("segments = %d, want 3", len(segs))
-		}
-	})
-
-	t.Run("ParseYamlKey empty", func(t *testing.T) {
-		t.Parallel()
-		k, segs, err := gig.ParseYamlKey("")
-		if err != nil {
-			t.Fatalf("ParseYamlKey() error = %v", err)
-		}
-		if k != "" || len(segs) != 0 {
-			t.Errorf("expected empty, got %q %v", k, segs)
-		}
-	})
-
-	t.Run("ParseYamlKey unclosed bracket", func(t *testing.T) {
-		t.Parallel()
-		_, _, err := gig.ParseYamlKey("foo[0")
-		if err == nil {
-			t.Fatal("expected error for unclosed bracket")
-		}
-	})
-
-	t.Run("ParseYamlKey invalid index", func(t *testing.T) {
-		t.Parallel()
-		_, _, err := gig.ParseYamlKey("foo[abc]")
-		if err == nil {
-			t.Fatal("expected error for invalid index")
-		}
-	})
-
-	t.Run("Segments error path", func(t *testing.T) {
-		t.Parallel()
-		gig.YamlKey("foo[abc]").Segments()
 	})
 }
 
 func TestTagResolverHandle(t *testing.T) {
 	t.Parallel()
 
-	tr := gig.NewTagResolver(nil)
-	tr = tr.Handle("!custom", gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+	resolver := gig.NewTagResolver(nil)
+	resolver = resolver.Handle("!custom", gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
 		return nil
 	}))
 
 	var called bool
-	tr = tr.Handle("!flag", gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
+	resolver = resolver.Handle("!flag", gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
 		called = true
+
 		return nil
 	}))
 
 	ctx := context.Background()
 	node := &yaml.Node{Tag: "!flag", Kind: yaml.ScalarNode, Value: "test"}
 
-	if err := tr.Mutate(ctx, node); err != nil {
+	if err := resolver.Mutate(ctx, node); err != nil {
 		t.Fatalf("Mutate() error = %v", err)
 	}
 	if !called {
@@ -1730,16 +1697,16 @@ func TestNewOverride(t *testing.T) {
 			ctx,
 			strings.NewReader("name: original\nport: 999\n"),
 			gig.WithMutators(
-				gig.NewOverride(map[gig.YamlKey]string{
-					gig.YamlKey("").Key("name"): "overridden",
+				mustOverride(t, map[gig.YamlKey]string{
+					gig.YamlKey("").Key("name"): overriddenStr,
 				}),
 			),
 		)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if got.Name != "overridden" {
-			t.Errorf("Name = %q, want %q", got.Name, "overridden")
+		if got.Name != overriddenStr {
+			t.Errorf("Name = %q, want %q", got.Name, overriddenStr)
 		}
 		if got.Port != 999 {
 			t.Errorf("Port = %d, want 999", got.Port)
@@ -1753,8 +1720,8 @@ func TestNewOverride(t *testing.T) {
 			ctx,
 			strings.NewReader("name: orig\nnested:\n  value: orig-nested\n"),
 			gig.WithMutators(
-				gig.NewOverride(map[gig.YamlKey]string{
-					gig.YamlKey("").Key("nested").Key("value"): "new-nested",
+				mustOverride(t, map[gig.YamlKey]string{
+					gig.YamlKey("").Key("nested").Key(valueStr): "new-nested",
 				}),
 			),
 		)
@@ -1773,7 +1740,7 @@ func TestNewOverride(t *testing.T) {
 			ctx,
 			strings.NewReader("{}\n"),
 			gig.WithMutators(
-				gig.NewOverride(map[gig.YamlKey]string{
+				mustOverride(t, map[gig.YamlKey]string{
 					gig.YamlKey("").Key("name"): "new-key",
 				}),
 			),
@@ -1858,6 +1825,7 @@ func TestNewFileHandlerNilRoot(t *testing.T) {
 func TestMergeVarious(t *testing.T) {
 	t.Parallel()
 	t.Run("empty dst", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 		got, err := gig.Load[cfg](
 			ctx,
@@ -1875,20 +1843,21 @@ func TestMergeVarious(t *testing.T) {
 func TestDefaultsWithEnvOptions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	env := map[string]string{"TEST_VAR": "from-env"}
+	env := map[string]string{"TEST_VAR": fromEnv}
 	got, err := gig.Load[cfg](
 		ctx,
 		strings.NewReader("name: !env TEST_VAR\n"),
 		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
 			v, ok := env[name]
+
 			return v, ok
 		})),
 	)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got.Name != "from-env" {
-		t.Errorf("Name = %q, want %q", got.Name, "from-env")
+	if got.Name != fromEnv {
+		t.Errorf("Name = %q, want %q", got.Name, fromEnv)
 	}
 }
 
@@ -1918,6 +1887,7 @@ func TestExpandEnvSimpleName(t *testing.T) {
 			if name == "TEST_EXPAND" {
 				return "expanded", true
 			}
+
 			return "", false
 		})),
 	)
@@ -1950,21 +1920,21 @@ func TestLoadWithExpanderv2(t *testing.T) {
 func TestParseError(t *testing.T) {
 	t.Parallel()
 	t.Run("unterminated", func(t *testing.T) {
-		_, err := parseEnv("${unclosed")
-		if err == nil {
+		t.Parallel()
+		if err := parseEnv("${unclosed"); err == nil {
 			t.Fatal("expected error")
 		}
 	})
 
 	t.Run("empty", func(t *testing.T) {
-		_, err := parseEnv("${}")
-		if err == nil {
+		t.Parallel()
+		if err := parseEnv("${}"); err == nil {
 			t.Fatal("expected error")
 		}
 	})
 }
 
-func parseEnv(expr string) (string, error) {
+func parseEnv(expr string) error {
 	// Use direct load to test expression parsing
 	type simpleCfg struct {
 		Val string `yaml:"val"`
@@ -1976,35 +1946,35 @@ func parseEnv(expr string) (string, error) {
 			return "", false
 		})),
 	)
-	if err != nil {
-		return "", err
-	}
-	return "", nil
+
+	return err
 }
 
 func TestOverrideEdgeCases(t *testing.T) {
 	t.Parallel()
 	t.Run("empty segments", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 		_, err := gig.Load[cfg](
 			ctx,
 			strings.NewReader("name: test\n"),
 			gig.WithMutators(
-				gig.NewOverride(map[gig.YamlKey]string{
-					"": "root",
+				mustOverride(t, map[gig.YamlKey]string{
+					"": rootStr,
 				}),
 			),
 		)
-		// Should not panic, may or may not error
+		// Should not panic; an empty key targets the document root.
 		_ = err
 	})
 
 	t.Run("unknown nil handlers", func(t *testing.T) {
-		tr := gig.NewTagResolver(nil)
+		t.Parallel()
+		resolver := gig.NewTagResolver(nil)
 		ctx := context.Background()
-		err := tr.Mutate(ctx, &yaml.Node{
+		err := resolver.Mutate(ctx, &yaml.Node{
 			Kind:  yaml.ScalarNode,
-			Tag:   "!!str",
+			Tag:   strTag,
 			Value: "plain",
 		})
 		if err != nil {
@@ -2023,6 +1993,7 @@ func TestLoadWithExpanderOptional(t *testing.T) {
 		strings.NewReader("name: !env? OPTIONAL_VAR\n"),
 		gig.WithEnvOptions(gig.WithEnvExpander(func(_ string, optional bool) (string, bool, error) {
 			capturedOptional = optional
+
 			return "", false, nil
 		})),
 	)
@@ -2045,15 +2016,15 @@ func TestOverrideSequence(t *testing.T) {
 		ctx,
 		strings.NewReader("list:\n  - a\n  - b\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
-				gig.YamlKey("").Key("list").Index(0): "overridden",
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("list").Index(0): overriddenStr,
 			}),
 		),
 	)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if len(got.List) != 2 || got.List[0] != "overridden" || got.List[1] != "b" {
+	if len(got.List) != 2 || got.List[0] != overriddenStr || got.List[1] != "b" {
 		t.Errorf("List = %#v, want [overridden b]", got.List)
 	}
 }
@@ -2066,8 +2037,8 @@ func TestOverrideCreateNestedPath(t *testing.T) {
 		ctx,
 		strings.NewReader("name: base\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
-				gig.YamlKey("").Key("nested").Key("value"): "created",
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("nested").Key(valueStr): "created",
 			}),
 		),
 	)
@@ -2094,13 +2065,13 @@ func TestEnvKeyToYamlKeyUnderscore(t *testing.T) {
 
 func TestNewFileHandlerRootAndFS(t *testing.T) {
 	t.Parallel()
-	f, err := gig.NewFileHandler(
+	fileHandler, err := gig.NewFileHandler(
 		gig.WithBaseDir("/custom"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = f
+	_ = fileHandler
 }
 
 func TestOverrideEmptyKey(t *testing.T) {
@@ -2113,8 +2084,8 @@ func TestOverrideEmptyKey(t *testing.T) {
 		ctx,
 		strings.NewReader("name: test\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
-				"": "root",
+			mustOverride(t, map[gig.YamlKey]string{
+				"": rootStr,
 			}),
 		),
 	)
@@ -2178,8 +2149,8 @@ func TestOverrideSequenceCreatePath(t *testing.T) {
 		ctx,
 		strings.NewReader("{}\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
-				gig.YamlKey("").Key("nested").Key("value"): "created-via-override",
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("nested").Key(valueStr): "created-via-override",
 			}),
 		),
 	)
@@ -2193,16 +2164,17 @@ func TestOverrideSequenceCreatePath(t *testing.T) {
 
 func TestNewEnvHandlerDirectWithOpts(t *testing.T) {
 	t.Parallel()
-	h, err := gig.NewEnvHandler(gig.WithEnvLookup(func(name string) (string, bool) {
+	envHandler, err := gig.NewEnvHandler(gig.WithEnvLookup(func(name string) (string, bool) {
 		if name == "EXISTS" {
-			return "value", true
+			return valueStr, true
 		}
+
 		return "", false
 	}))
 	if err != nil {
 		t.Fatalf("NewEnvHandler() error = %v", err)
 	}
-	if h == nil {
+	if envHandler == nil {
 		t.Fatal("handler should not be nil")
 	}
 }
@@ -2236,15 +2208,16 @@ func TestDirectEnvHandlerOptions(t *testing.T) {
 		if name == "DIRECT" {
 			return "direct-value", true
 		}
+
 		return "", false
 	}
-	h, err := gig.NewEnvHandler(gig.WithEnvLookup(lookup))
+	envHandler, err := gig.NewEnvHandler(gig.WithEnvLookup(lookup))
 	if err != nil {
 		t.Fatalf("NewEnvHandler() error = %v", err)
 	}
 	ctx := context.Background()
-	node := &yaml.Node{Tag: "!env", Value: "DIRECT", Kind: yaml.ScalarNode}
-	err = h.Mutate(ctx, node)
+	node := &yaml.Node{Tag: envTag, Value: "DIRECT", Kind: yaml.ScalarNode}
+	err = envHandler.Mutate(ctx, node)
 	if err != nil {
 		t.Fatalf("Mutate() error = %v", err)
 	}
@@ -2260,7 +2233,7 @@ func TestOverrideSetValueScalarSegmentsEmpty(t *testing.T) {
 		ctx,
 		strings.NewReader("{}\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
+			mustOverride(t, map[gig.YamlKey]string{
 				"": "root-value",
 			}),
 		),
@@ -2281,7 +2254,7 @@ func TestOverrideSequenceOutOfBounds(t *testing.T) {
 		ctx,
 		strings.NewReader("list:\n  - a\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
+			mustOverride(t, map[gig.YamlKey]string{
 				gig.YamlKey("").Key("list").Index(5): "ignored",
 			}),
 		),
@@ -2306,7 +2279,7 @@ func TestOverrideSequenceNested(t *testing.T) {
 		ctx,
 		strings.NewReader("items:\n  - name: first\n  - name: second\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
+			mustOverride(t, map[gig.YamlKey]string{
 				gig.YamlKey("").Key("items").Index(0).Key("name"): "overridden-name",
 			}),
 		),
@@ -2326,8 +2299,8 @@ func TestOverrideNonMappingRoot(t *testing.T) {
 		ctx,
 		strings.NewReader("42\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
-				gig.YamlKey("").Key("sub"): "value",
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("sub"): valueStr,
 			}),
 		),
 	)
@@ -2363,18 +2336,17 @@ func TestBuildPathDocumentNode(t *testing.T) {
 		Value string `yaml:"value"`
 	}
 	// Create a mutator that returns error at top-level
-	tr := gig.NewTagResolver(map[string]gig.Mutator{
-		"!error": gig.MutatorFunc(func(_ context.Context, node *yaml.Node) error {
+	resolver := gig.NewTagResolver(map[string]gig.Mutator{
+		"!error": gig.MutatorFunc(func(_ context.Context, _ *yaml.Node) error {
 			return errors.New("top-level error")
 		}),
 	})
-	_ = tr
 	// Use direct YAML where entire doc is a tagged scalar
 	ctx := context.Background()
 	_, err := gig.Load[directCfg](
 		ctx,
 		strings.NewReader("!error value\n"),
-		gig.WithMutators(tr),
+		gig.WithMutators(resolver),
 	)
 	if err == nil {
 		t.Fatal("expected error for top-level tagged scalar")
@@ -2411,8 +2383,9 @@ func TestFileOptionalTrailingEscape(t *testing.T) {
 		gig.WithFileOptions(gig.WithBaseDir(t.TempDir())),
 		gig.WithEnvOptions(gig.WithEnvLookup(func(name string) (string, bool) {
 			if name == "x" {
-				return "secret.txt", true
+				return secretFile, true
 			}
+
 			return "", false
 		})),
 	)
@@ -2428,16 +2401,16 @@ func TestOverrideSetValueScalarEmptySegs(t *testing.T) {
 		ctx,
 		strings.NewReader("original\n"),
 		gig.WithMutators(
-			gig.NewOverride(map[gig.YamlKey]string{
-				"": "overridden",
+			mustOverride(t, map[gig.YamlKey]string{
+				"": overriddenStr,
 			}),
 		),
 	)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got != "overridden" {
-		t.Errorf("got %q, want %q", got, "overridden")
+	if got != overriddenStr {
+		t.Errorf("got %q, want %q", got, overriddenStr)
 	}
 }
 
@@ -2464,12 +2437,9 @@ func TestBuildDefaultMutatorsBothRootAndFS(t *testing.T) {
 	}
 }
 
-type errorFile struct {
-	name string
-	data []byte
-}
+type errorFile struct{}
 
-func (f *errorFile) Read(p []byte) (int, error) {
+func (f *errorFile) Read(_ []byte) (int, error) {
 	return 0, errors.New("read error")
 }
 
@@ -2481,25 +2451,21 @@ func (f *errorFile) Stat() (os.FileInfo, error) {
 	return nil, errors.New("stat error")
 }
 
-type errorFS struct {
-	dir string
-}
+type errorFS struct{}
 
-func (efs *errorFS) Open(name string) (fs.File, error) {
+func (efs *errorFS) Open(_ string) (fs.File, error) {
 	return &errorFile{}, nil
 }
 
-type closeFailFile struct {
-	closed bool
-}
+type closeFailFile struct{}
 
 func (f *closeFailFile) Read(p []byte) (int, error) {
 	copy(p, "data")
+
 	return 4, io.EOF
 }
 
 func (f *closeFailFile) Close() error {
-	f.closed = true
 	return errors.New("close failure")
 }
 
@@ -2509,7 +2475,7 @@ func (f *closeFailFile) Stat() (os.FileInfo, error) {
 
 type closeFailFS struct{}
 
-func (closeFailFS) Open(name string) (fs.File, error) {
+func (closeFailFS) Open(_ string) (fs.File, error) {
 	return &closeFailFile{}, nil
 }
 
@@ -2523,5 +2489,106 @@ func TestReadFromFSCloseError(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error from close failure")
+	}
+}
+
+func TestNewOverrideInvalidKeys(t *testing.T) {
+	t.Parallel()
+
+	_, err := gig.NewOverride(map[gig.YamlKey]string{
+		gig.YamlKey("foo[0"):    "a",
+		gig.YamlKey("foo[abc]"): "b",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid override keys")
+	}
+	if !strings.Contains(err.Error(), "foo[0") || !strings.Contains(err.Error(), "foo[abc]") {
+		t.Errorf("error = %v, want both invalid keys reported", err)
+	}
+
+	_, err = gig.NewOverride(map[gig.YamlKey]string{gig.YamlKey("trailing\\"): "a"})
+	if err == nil || !strings.Contains(err.Error(), "trailing escape") {
+		t.Errorf("error = %v, want trailing escape error", err)
+	}
+}
+
+func TestYamlKeyLiteralDotKey(t *testing.T) {
+	t.Parallel()
+
+	type frameworksCfg struct {
+		Frameworks map[string]struct {
+			Version string `yaml:"version"`
+		} `yaml:"frameworks"`
+	}
+
+	got, err := gig.Load[frameworksCfg](
+		context.Background(),
+		strings.NewReader("frameworks:\n  .net:\n    version: \"1\"\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("frameworks").Key(dotNetKey).Key("version"): "2",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if version := got.Frameworks[dotNetKey].Version; version != "2" {
+		t.Errorf("Frameworks[.net].Version = %q, want 2", version)
+	}
+}
+
+func TestYamlKeyLiteralBracketKey(t *testing.T) {
+	t.Parallel()
+
+	type queryCfg struct {
+		URL struct {
+			Query map[string]string `yaml:"query"`
+		} `yaml:"url"`
+	}
+
+	got, err := gig.Load[queryCfg](
+		context.Background(),
+		strings.NewReader("url:\n  query:\n    \"filters[0]\": a\n    \"filters[1]\": b\n"),
+		gig.WithMutators(
+			mustOverride(t, map[gig.YamlKey]string{
+				gig.YamlKey("").Key("url").Key("query").Key(filtersZero): "overridden",
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.URL.Query[filtersZero] != overriddenStr {
+		t.Errorf("filters[0] = %q, want overridden", got.URL.Query[filtersZero])
+	}
+	if got.URL.Query["filters[1]"] != "b" {
+		t.Errorf("filters[1] = %q, want b", got.URL.Query["filters[1]"])
+	}
+}
+
+func TestEnvFallbackLiteralDollar(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	got, err := gig.Load[cfg](
+		ctx,
+		strings.NewReader("name: !env '${MISSING:-$}'\n"),
+		gig.WithEnvOptions(gig.WithEnvLookup(func(_ string) (string, bool) {
+			return "", false
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Name != "$" {
+		t.Errorf("Name = %q, want %q", got.Name, "$")
+	}
+}
+
+func TestTagResolverUnknownKind(t *testing.T) {
+	t.Parallel()
+	err := gig.NewTagResolver(nil).Mutate(context.Background(), &yaml.Node{Kind: 0})
+	if err != nil {
+		t.Errorf("Mutate() error = %v, want nil", err)
 	}
 }

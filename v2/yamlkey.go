@@ -3,6 +3,7 @@ package gig
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type segment struct {
@@ -13,14 +14,22 @@ type segment struct {
 
 // YamlKey is a canonical dot-separated path to a YAML node, such as
 // "database.host" or "servers[0].host".
+//
+// Build paths with Key and Index. Each Key argument is treated as one literal
+// segment, so field names containing '.' or '[' are supported; those
+// characters, and a backslash, are escaped with a backslash in the string
+// form.
 type YamlKey string
 
-// Key returns a new YamlKey with the field name appended.
+// Key returns a new YamlKey with the field name appended. The name is one
+// literal segment, even if it contains '.' or '['.
 func (k YamlKey) Key(name string) YamlKey {
+	escaped := escapeSegment(name)
 	if k == "" {
-		return YamlKey(name)
+		return YamlKey(escaped)
 	}
-	return YamlKey(string(k) + "." + name)
+
+	return YamlKey(string(k) + "." + escaped)
 }
 
 // Index returns a new YamlKey with the sequence index appended.
@@ -28,65 +37,88 @@ func (k YamlKey) Index(idx int) YamlKey {
 	return YamlKey(string(k) + fmt.Sprintf("[%d]", idx))
 }
 
-// Segments parses the key into its component segments.
-func (k YamlKey) Segments() []segment {
-	_, segs, err := ParseYamlKey(string(k))
-	if err != nil {
-		return nil
+func escapeSegment(name string) string {
+	if !strings.ContainsAny(name, `\.[`) {
+		return name
 	}
-	return segs
+
+	var builder strings.Builder
+	builder.Grow(len(name) + 4)
+	for index := range len(name) {
+		char := name[index]
+		if char == '\\' || char == '.' || char == '[' {
+			builder.WriteByte('\\')
+		}
+		builder.WriteByte(char)
+	}
+
+	return builder.String()
 }
 
-// ParseYamlKey parses a dot/bracket-separated YAML path string into a
-// canonical YamlKey and its segments.
-func ParseYamlKey(s string) (YamlKey, []segment, error) {
-	if s == "" {
-		return "", nil, nil
-	}
-	var segs []segment
-	var buf []byte
-	for i := 0; i < len(s); i++ {
-		switch ch := s[i]; ch {
+func parseSegments(path string) ([]segment, error) {
+	segments := make([]segment, 0)
+	buffer := make([]byte, 0)
+	escaped := false
+	for position := 0; position < len(path); position++ {
+		char := path[position]
+		if escaped {
+			buffer = append(buffer, char)
+			escaped = false
+
+			continue
+		}
+		switch char {
+		case '\\':
+			escaped = true
 		case '.':
-			if len(buf) > 0 {
-				segs = append(segs, segment{key: string(buf)})
-				buf = buf[:0]
-			}
+			segments = appendKeySegment(segments, &buffer)
 		case '[':
-			if len(buf) > 0 {
-				segs = append(segs, segment{key: string(buf)})
-				buf = buf[:0]
-			}
-			j := i + 1
-			for j < len(s) && s[j] != ']' {
-				j++
-			}
-			if j >= len(s) {
-				return "", nil, fmt.Errorf("unclosed bracket at position %d", i)
-			}
-			idx, err := strconv.Atoi(s[i+1 : j])
+			segments = appendKeySegment(segments, &buffer)
+
+			indexSegment, nextPosition, err := parseIndexSegment(path, position)
 			if err != nil {
-				return "", nil, fmt.Errorf("invalid index %q at position %d", s[i+1:j], i)
+				return nil, err
 			}
-			segs = append(segs, segment{key: s[i+1 : j], isIndex: true, index: idx})
-			i = j
+			segments = append(segments, indexSegment)
+			position = nextPosition
 		default:
-			buf = append(buf, ch)
+			buffer = append(buffer, char)
 		}
 	}
-	if len(buf) > 0 {
-		segs = append(segs, segment{key: string(buf)})
+	if escaped {
+		return nil, fmt.Errorf("trailing escape in key %q", path)
 	}
-	canonical := ""
-	for _, seg := range segs {
-		if seg.isIndex {
-			canonical += fmt.Sprintf("[%s]", seg.key)
-		} else {
-			if canonical != "" {
-				canonical += "."
-			}
-			canonical += seg.key
-		}
+	if len(buffer) > 0 {
+		segments = append(segments, segment{key: string(buffer), isIndex: false, index: 0})
 	}
-	return YamlKey(canonical), segs, nil
+
+	return segments, nil
+}
+
+func appendKeySegment(segments []segment, buffer *[]byte) []segment {
+	if len(*buffer) == 0 {
+		return segments
+	}
+	segments = append(segments, segment{key: string(*buffer), isIndex: false, index: 0})
+	*buffer = (*buffer)[:0]
+
+	return segments
+}
+
+func parseIndexSegment(path string, position int) (segment, int, error) {
+	closeIndex := position + 1
+	for closeIndex < len(path) && path[closeIndex] != ']' {
+		closeIndex++
+	}
+	if closeIndex >= len(path) {
+		return segment{key: "", isIndex: false, index: 0}, position, fmt.Errorf("unclosed bracket at position %d", position)
+	}
+
+	index, err := strconv.Atoi(path[position+1 : closeIndex])
+	if err != nil {
+		return segment{key: "", isIndex: false, index: 0}, position,
+			fmt.Errorf("invalid index %q at position %d", path[position+1:closeIndex], position)
+	}
+
+	return segment{key: path[position+1 : closeIndex], isIndex: true, index: index}, closeIndex, nil
 }
